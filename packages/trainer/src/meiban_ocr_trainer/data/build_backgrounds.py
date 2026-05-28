@@ -50,12 +50,19 @@ def collect_backgrounds(
                 continue
             if row.get("subkind") != "background":
                 continue
-            src = crops_root / row["filename"]
+            fn = row["filename"]
+            # path traversal 防止: absolute path / `..` を含む path は拒否。
+            # crops_root の外に出ないことを保証する (v3 #6 hardening)。
+            fn_path = Path(fn)
+            if fn_path.is_absolute() or ".." in fn_path.parts:
+                print(f"  ! suspicious filename, skip: {fn!r}", file=sys.stderr)
+                continue
+            src = crops_root / fn
             if not src.exists():
                 print(f"  ! missing: {src}", file=sys.stderr)
                 continue
             # ファイル名衝突を避けるため source 画像 stem を prefix に
-            dst_name = f"{row['source']}_{Path(row['filename']).name}"
+            dst_name = f"{row['source']}_{fn_path.name}"
             dst = output_dir / dst_name
             shutil.copy2(src, dst)
             n += 1

@@ -65,7 +65,7 @@ def test_load_v2_regions_positive_and_negative(tmp_path: Path) -> None:
             {
                 "id": 0, "category": "positive",
                 "bbox": [10, 10, 100, 40], "text_bbox": [12, 12, 98, 38],
-                "text": "E900MM123456", "quality": "clear",
+                "text": "E300MM999003", "quality": "clear",
                 "confidence": 0.95, "claude_verified": True,
             },
             {
@@ -88,7 +88,7 @@ def test_load_v2_regions_positive_and_negative(tmp_path: Path) -> None:
     assert len(ann.regions) == 3
     assert len(ann.positives) == 1
     assert len(ann.negatives) == 2
-    assert ann.positives[0].text == "E900MM123456"
+    assert ann.positives[0].text == "E300MM999003"
     assert ann.negatives[0].subkind == "other_text"
     assert ann.negatives[0].text_visible == "WARNING"
     assert ann.negatives[1].subkind == "background"
@@ -186,6 +186,62 @@ def test_load_missing_image_size_raises(tmp_path: Path) -> None:
     p.write_text(json.dumps({"image": "x.jpg", "labels": []}))
     with pytest.raises(ValueError, match="missing image"):
         load_annotation(p)
+
+
+def test_text_visible_rejects_real_serial_pattern() -> None:
+    """text_visible に Ericsson strict pattern を含むリアルシリアルを書くと ValueError。"""
+    with pytest.raises(ValueError, match="forbidden pattern"):
+        Region(
+            id=0, category="negative", bbox=[0, 0, 10, 10],
+            subkind="other_text",
+            # E300MM* (dummy 範囲) でも strict regex に一致するので validator は弾く
+            text_visible="E300MM999003",
+        )
+
+
+def test_text_visible_rejects_long_digit_sequence() -> None:
+    """5 桁以上の連続数字も弾く (シリアル末尾の可能性)。"""
+    with pytest.raises(ValueError, match="forbidden pattern"):
+        Region(
+            id=1, category="negative", bbox=[0, 0, 10, 10],
+            subkind="other_text",
+            text_visible="503509 (handwritten)",
+        )
+
+
+def test_text_visible_allows_safe_strings() -> None:
+    """公開情報や redact 済表記は通る。"""
+    # 製品モデル名 / 法人名
+    Region(
+        id=2, category="negative", bbox=[0, 0, 10, 10],
+        subkind="other_text",
+        text_visible="Radio 2218 B42B",
+    )
+    Region(
+        id=3, category="negative", bbox=[0, 0, 10, 10],
+        subkind="other_text",
+        text_visible="エリクソン・ジャパン株式会社",
+    )
+    # redact 済
+    Region(
+        id=4, category="negative", bbox=[0, 0, 10, 10],
+        subkind="other_text",
+        text_visible="(handwritten digits, redacted)",
+    )
+    # 4 桁までは許容 (年号・短い ID 等)
+    Region(
+        id=5, category="negative", bbox=[0, 0, 10, 10],
+        subkind="other_text",
+        text_visible="2018年9月",
+    )
+
+
+def test_text_visible_none_skips_validation() -> None:
+    """text_visible 未指定なら validator は走らない (positive region 等)。"""
+    Region(
+        id=6, category="positive", bbox=[0, 0, 10, 10],
+        text="E300MM000001",
+    )
 
 
 def test_unknown_region_fields_preserved_in_extra(tmp_path: Path) -> None:

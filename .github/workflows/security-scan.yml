@@ -1,0 +1,83 @@
+name: Security Scan
+
+# Why: 過去 2 回の security review (Iter2 v2 #2, Iter3 v3 #2/#4) で
+# Ericsson 実シリアル形式 (^E[39]\d{2}MM\d{6}$) が source code / annotations / commit
+# message に混入する事故が発生。本 workflow で正規表現 lint を回し、
+# `E300MM` 系の dummy 以外の real-pattern serial が tracked file に出現したら fail。
+#
+# 例外:
+#   - 既存テスト fixture (`E900MM123456`, `E900MM111111` 等) は意図的な synthetic data
+#     なので `# noqa: serial-check` をマーカーとして許容する。
+#   - `E300MM\d{6}` (dummy range) は常に許容。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: secscan-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  serial-leak-scan:
+    name: Real-pattern serial leak scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # full history を取得しないと PR commit のみの差分検査ができない
+          fetch-depth: 0
+
+      - name: Scan tracked files for real-pattern Ericsson serials
+        run: |
+          set -euo pipefail
+          echo "Scanning for ^E[39]\\d{2}MM\\d{6}\$ matches not in E300MM dummy range..."
+
+          # 検索対象拡張子。バイナリ・gitignored は git ls-files で除外される。
+          PATTERNS='\.(py|ts|tsx|js|json|yaml|yml|md|toml|html|css|sh)$'
+
+          # git ls-files で tracked file のみ対象 (gitignored は除外)
+          # → grep で real-pattern serial を抽出
+          # → E300MM dummy / # noqa: serial-check マーカー付き行を除外
+          MATCHES=$(git ls-files \
+            | grep -E "$PATTERNS" \
+            | xargs grep -HnE 'E[39][0-9]{2}MM[0-9]{6}' 2>/dev/null \
+            | grep -v 'E300MM[0-9]' \
+            | grep -v 'noqa: serial-check' \
+            || true)
+
+          if [ -n "$MATCHES" ]; then
+            echo "::error::Real-pattern Ericsson serial detected in tracked files:"
+            echo "$MATCHES"
+            echo ""
+            echo "Policy: only 'E300MM\\d{6}' is allowed as dummy serial."
+            echo "If this is intentional test fixture, add '# noqa: serial-check' to the line."
+            echo "If this is a real customer serial, redact it (see SECURITY.md)."
+            exit 1
+          fi
+          echo "OK: no real-pattern serials found."
+
+      - name: Scan text_visible fields in annotations for digit leaks
+        run: |
+          set -euo pipefail
+          # annotations/*.json の text_visible は LABELING.md で「リアル数字禁止」と定義。
+          # Python loader (annotation.py の Region.__post_init__) でも弾くが、
+          # CI でも JSON ファイルレベルでチェック。
+          if git ls-files annotations/ > /dev/null 2>&1; then
+            BAD=$(git ls-files annotations/ \
+              | xargs grep -HnE '"text_visible"\s*:\s*"[^"]*[0-9]{5,}' 2>/dev/null \
+              || true)
+            if [ -n "$BAD" ]; then
+              echo "::error::text_visible contains 5+ consecutive digits:"
+              echo "$BAD"
+              echo "Policy: text_visible は public commit に含まれるためリアル数字は不可。"
+              echo "  例: '(handwritten digits, redacted)' のように redact 表記を使う。"
+              exit 1
+            fi
+          fi
+          echo "OK: no leaky text_visible fields."

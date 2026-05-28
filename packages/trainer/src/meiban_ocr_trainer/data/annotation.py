@@ -43,6 +43,7 @@ v2 schema:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -52,6 +53,16 @@ NegativeSubkind = Literal["background", "other_text", "partial", "other_vendor",
 Quality = Literal["clear", "blur", "partial", "occluded"]
 
 SCHEMA_VERSION = 2
+
+# text_visible に書き込まれてはいけないパターン (info disclosure 防止)。
+# v3 security review #3 を受けて、リアル数字・vendor pattern をハードコードで弾く。
+# 拡張時は CI lint (.github/workflows/security-scan.yml) と同期させること。
+_TEXT_VISIBLE_FORBIDDEN_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # vendor strict pattern (Ericsson real serial 形式)
+    re.compile(r"E[39]\d{2}MM\d{6}"),
+    # 5 桁以上の連続数字 (シリアル末尾の可能性、redact 済表記なら問題なし)
+    re.compile(r"\d{5,}"),
+)
 
 # 画像レベルのメタキー (loader/saver で破壊しない)
 _PRESERVED_META_KEYS = (
@@ -97,6 +108,20 @@ class Region:
             raise ValueError(
                 f"positive region id={self.id} must have non-empty text"
             )
+        # info disclosure 防止: text_visible にリアル数字や vendor pattern を入れない。
+        # Why: text_visible は学習に使われないが public JSON commit に含まれるため、
+        # 顧客現場の手書きシリアルや末尾数字を書き戻すと info leak になる。
+        # 許容例: "(handwritten digits, redacted)" / "WARNING" / "Radio 2218 B42B"
+        # 拒否例: vendor strict pattern 一致文字列、5+ 桁の連続数字を含む文字列
+        if self.text_visible:
+            for pat in _TEXT_VISIBLE_FORBIDDEN_PATTERNS:
+                if pat.search(self.text_visible):
+                    raise ValueError(
+                        f"region id={self.id} text_visible contains forbidden pattern "
+                        f"{pat.pattern!r}: {self.text_visible!r}. "
+                        f"Redact real serials / 5+ digit sequences. "
+                        f"See LABELING.md and SECURITY.md."
+                    )
 
 
 @dataclass

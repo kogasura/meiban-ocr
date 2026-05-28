@@ -68,7 +68,7 @@ def test_mixed_partial_correctness() -> None:
         "E300MM999999",  # gt: 0004, pattern OK だが内容違い
         "GARBAGE",       # gt: 0005, pattern 外
         "",              # neg 正しく rejected
-        "E900MM111111",  # neg 誤受容
+        "E300MM999111",  # neg 誤受容
     ]
     gts = [
         "E300MM000001",

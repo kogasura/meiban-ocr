@@ -141,7 +141,14 @@ def extract_crops(
 
     for ann_path in sorted(annotations_dir.glob("img_*.json")):
         ann: Annotation = load_annotation(ann_path)
-        image_stem = Path(ann.image).stem
+        # path traversal 防止: annotation 内の `image` フィールドが absolute / `..` を
+        # 含む場合は skip (v3 #6 hardening)。
+        image_rel = Path(ann.image)
+        if image_rel.is_absolute() or ".." in image_rel.parts:
+            print(f"  - {ann_path.name}: suspicious image path {ann.image!r}, skip",
+                  file=sys.stderr)
+            continue
+        image_stem = image_rel.stem
         split = _resolve_split(image_stem, split_map)
         if split is None:
             print(f"  - {image_stem}: no split assigned, skip", file=sys.stderr)

@@ -48,7 +48,7 @@ def v2_dataset_root(tmp_path: Path) -> Path:
     _write_image(root / "train" / "real_neg" / "img_a_n02.png")
     _write_labels_v2(root / "labels.tsv", [
         ["train/real/img_a_l00.png", "E300MM000013", "train", "img_a", "0.99", "positive", ""],
-        ["train/real/img_a_l01.png", "E900MM123456", "train", "img_a", "0.95", "positive", ""],
+        ["train/real/img_a_l01.png", "E300MM999003", "train", "img_a", "0.95", "positive", ""],
         ["train/real_neg/img_a_n02.png", "", "train", "img_a", "1.0", "negative", "other_text"],
     ])
     return root
@@ -90,7 +90,7 @@ def test_ctc_collate_passes_category_and_subkinds(v2_dataset_root: Path) -> None
     assert batch["images"].shape[0] == 3
     assert batch["categories"] == ["positive", "positive", "negative"]
     assert batch["subkinds"] == ["", "", "other_text"]
-    assert batch["texts"] == ["E300MM000013", "E900MM123456", ""]
+    assert batch["texts"] == ["E300MM000013", "E300MM999003", ""]
     assert batch["target_lengths"].tolist() == [12, 12, 0]
     assert batch["targets"].numel() == 24
 
@@ -164,6 +164,21 @@ def test_neg_ratio_for_epoch_endpoints_and_interpolation() -> None:
 def test_neg_ratio_empty_schedule_returns_zero() -> None:
     from meiban_ocr_trainer.data.dataset import neg_ratio_for_epoch
     assert neg_ratio_for_epoch([], 5) == 0.0
+
+
+def test_neg_ratio_schedule_rejects_too_long() -> None:
+    from meiban_ocr_trainer.data.dataset import neg_ratio_for_epoch
+    sched = [{"epoch": i, "ratio": 0.1} for i in range(1001)]
+    with pytest.raises(ValueError, match="too long"):
+        neg_ratio_for_epoch(sched, 1)
+
+
+def test_neg_ratio_schedule_rejects_out_of_range() -> None:
+    from meiban_ocr_trainer.data.dataset import neg_ratio_for_epoch
+    with pytest.raises(ValueError, match="out of"):
+        neg_ratio_for_epoch([{"epoch": 1, "ratio": 1.5}], 1)
+    with pytest.raises(ValueError, match="out of"):
+        neg_ratio_for_epoch([{"epoch": 1, "ratio": -0.1}], 1)
 
 
 def test_curriculum_sampler_respects_neg_ratio(v2_dataset_root: Path) -> None:

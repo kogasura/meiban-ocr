@@ -248,9 +248,23 @@ def neg_ratio_for_epoch(schedule: list[dict], epoch: int) -> float:
 
     epoch が schedule の範囲外 (前後) なら端点の値を返す。
     schedule が空なら 0.0 を返す。
+
+    入力検証:
+        - schedule 長 > 1000 で ValueError (config 経由 DoS 防止)
+        - 各 ratio が [0, 1] 範囲外なら ValueError
     """
     if not schedule:
         return 0.0
+    if len(schedule) > 1000:
+        raise ValueError(
+            f"neg_ratio_schedule too long ({len(schedule)} entries, max 1000)"
+        )
+    for s in schedule:
+        ratio = float(s["ratio"])
+        if not 0.0 <= ratio <= 1.0:
+            raise ValueError(
+                f"neg_ratio_schedule entry has ratio={ratio} out of [0, 1]: {s}"
+            )
     sorted_sched = sorted(schedule, key=lambda x: int(x["epoch"]))
     if epoch <= int(sorted_sched[0]["epoch"]):
         return float(sorted_sched[0]["ratio"])
