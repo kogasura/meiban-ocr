@@ -227,7 +227,8 @@ def train_loop(cfg: dict, output_dir: Path) -> dict:
     # Final test evaluation with best ckpt
     print(f"\n[train] loading best ckpt (epoch {best_epoch}, val_CER {best_val_cer:.4f})...",
           file=sys.stderr)
-    ckpt = torch.load(best_path, map_location=device, weights_only=False)
+    # Why weights_only=True: pickle 経由の任意コード実行を防ぐ。
+    ckpt = torch.load(best_path, map_location=device, weights_only=True)
     model.load_state_dict(ckpt["model_state"])
     test_cer, test_em, test_loss, test_samples = evaluate_split(
         model, loaders["test"], tokenizer, device

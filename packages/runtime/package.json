@@ -1,6 +1,6 @@
 {
   "name": "@meiban-ocr/runtime",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Browser-friendly alphanumeric OCR runtime (onnxruntime-web).",
   "license": "Apache-2.0",
   "author": "yuuki-okubo <yuuki1118sss@gmail.com>",

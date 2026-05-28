@@ -6,9 +6,10 @@ from meiban_ocr_trainer.tokenizer import CTCTokenizer
 
 def test_encode_known_serial():
     tok = CTCTokenizer()
+    # 12文字シリアル (dummy E300MM000032、real serial は使わない)
     ids = tok.encode("E300MM000032")
-    # E=14, 3=3, 0=0, 3=3, M=22, M=22, 5=5, 0=0, 0=0, 9=9, 4=4, 2=2
-    assert ids == [14, 3, 0, 3, 22, 22, 5, 0, 0, 9, 4, 2]
+    # E=14, 3=3, 0=0, 0=0, M=22, M=22, 0=0, 0=0, 0=0, 0=0, 3=3, 2=2
+    assert ids == [14, 3, 0, 0, 22, 22, 0, 0, 0, 0, 3, 2]
 
 
 def test_encode_rejects_unknown_char():

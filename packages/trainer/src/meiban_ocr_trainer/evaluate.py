@@ -46,7 +46,9 @@ def main(argv: list[str] | None = None) -> int:
     collate = partial(ctc_collate, tokenizer=tokenizer)
     dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate)
 
-    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    # Why weights_only=True: pickle 経由の任意コード実行を防ぐ (CVE-2023-43654 系)。
+    # ckpt は state_dict + 基本型 dict のみ。
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
     cfg = ckpt.get("config", {})
     model_cfg = cfg.get("model", {})
     model = TinyOCRModel(

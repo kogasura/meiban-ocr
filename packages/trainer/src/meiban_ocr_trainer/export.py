@@ -176,7 +176,8 @@ def main(argv: list[str] | None = None) -> int:
 
     device = torch.device("cpu")
     print(f"[export] loading checkpoint: {args.checkpoint}", file=sys.stderr)
-    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    # Why weights_only=True: pickle 経由の任意コード実行を防ぐ。
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
     model = _build_model_from_ckpt(ckpt, device)
     print(f"  ckpt epoch={ckpt.get('epoch')}, val_CER={ckpt.get('val_cer')}",
           file=sys.stderr)

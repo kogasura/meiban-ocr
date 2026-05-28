@@ -51,9 +51,9 @@ describe('ctcGreedyDecode', () => {
 
 describe('preprocessText', () => {
   it('NFKC + uppercase + strip dashes', () => {
-    expect(preprocessText('e303-mm-500942')).toBe('E300MM000032');
+    expect(preprocessText('e300-mm-000032')).toBe('E300MM000032');
     // 全角数字も NFKC で半角化されることを確認
-    expect(preprocessText('Ｅ303ＭＭ500942')).toBe('E300MM000032');
+    expect(preprocessText('Ｅ300ＭＭ000032')).toBe('E300MM000032');
   });
 });
 
@@ -73,15 +73,15 @@ describe('applyCorrectionPipeline (Ericsson)', () => {
   });
 
   it('stage 2: O→0 fallback', () => {
-    // O が混入していて strict にマッチしないケース
-    expect(applyCorrectionPipeline('E3O3MM5OO942', ericsson)).toEqual({
+    // O (英字) が 0 (数字) の位置に混入。O→0 適用で strict にマッチ。
+    expect(applyCorrectionPipeline('E3OOMM0OOO32', ericsson)).toEqual({
       text: 'E300MM000032',
       matchStage: 2,
     });
   });
 
   it('stage 5: partial match + O→0', () => {
-    expect(applyCorrectionPipeline('garbage E3O3MM5OO942 tail', ericsson)).toEqual({
+    expect(applyCorrectionPipeline('garbage E3OOMM0OOO32 tail', ericsson)).toEqual({
       text: 'E300MM000032',
       matchStage: 5,
     });

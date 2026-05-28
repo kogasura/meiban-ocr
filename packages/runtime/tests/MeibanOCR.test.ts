@@ -16,4 +16,18 @@ describe('MeibanOCR public API surface', () => {
     const r = applyCorrectionPipeline('E300MM000032', ericsson);
     expect(r.text).toBe('E300MM000032');
   });
+
+  // Security: modelUrl の scheme は http/https/data/blob 限定 (v0.3.1+)
+  it('rejects suspicious modelUrl protocols', async () => {
+    const { MeibanOCR } = await import('../src/MeibanOCR');
+    for (const bad of [
+      'javascript:alert(1)',
+      'vbscript:foo',
+      'file:///etc/passwd',
+    ]) {
+      await expect(
+        MeibanOCR.create({ modelUrl: bad }),
+      ).rejects.toThrow(/unsupported protocol|invalid modelUrl/);
+    }
+  });
 });

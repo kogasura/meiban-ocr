@@ -58,6 +58,36 @@ export interface OCRResult {
 const DEFAULT_MIN_CONFIDENCE = 0.5;
 const DEFAULT_EPS: Array<'webgpu' | 'wasm' | 'webgl'> = ['webgpu', 'wasm'];
 
+// Why: ORT は `data:` / `blob:` / `https:` / `http:` などを受け付ける。
+// 利用側が untrusted な値 (URL query 等) を `modelUrl` に渡したとき、
+// `javascript:` / `vbscript:` / `file:` が来ると任意 JS 実行 や local file 読込
+// につながる可能性があるため、whitelist で検証する。
+const ALLOWED_MODEL_URL_PROTOCOLS = new Set([
+  'https:',
+  'http:',
+  'data:',
+  'blob:',
+]);
+
+function validateModelUrl(rawUrl: string): void {
+  let parsed: URL;
+  try {
+    const base =
+      typeof location !== 'undefined' && location.href
+        ? location.href
+        : 'http://localhost/';
+    parsed = new URL(rawUrl, base);
+  } catch {
+    throw new Error(`MeibanOCR.create: invalid modelUrl: ${rawUrl}`);
+  }
+  if (!ALLOWED_MODEL_URL_PROTOCOLS.has(parsed.protocol)) {
+    throw new Error(
+      `MeibanOCR.create: unsupported protocol "${parsed.protocol}" in modelUrl. ` +
+        `Allowed: http, https, data, blob.`,
+    );
+  }
+}
+
 export class MeibanOCR {
   private readonly session: ort.InferenceSession;
   private readonly options: MeibanOCROptions;
@@ -79,6 +109,8 @@ export class MeibanOCR {
           : new Uint8Array(options.modelBytes);
       session = await ort.InferenceSession.create(bytes, sessionOptions);
     } else if (options.modelUrl) {
+      // Security: scheme 検証 (http/https/data/blob のみ許可)
+      validateModelUrl(options.modelUrl);
       session = await ort.InferenceSession.create(options.modelUrl, sessionOptions);
     } else {
       // バンドル ONNX。Vite/Webpack の ?url import で URL に解決される。
