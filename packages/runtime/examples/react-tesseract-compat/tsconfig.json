@@ -1,0 +1,18 @@
+{
+  "// note": "opt-in typecheck. メインの tsconfig には含めない (例示コードのため依存追加を避ける)。",
+  "// usage": "cd examples/react-tesseract-compat && pnpm i react @types/react tesseract.js @meiban-ocr/runtime && tsc --noEmit",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "noEmit": true
+  },
+  "include": ["*.ts", "*.tsx"]
+}
