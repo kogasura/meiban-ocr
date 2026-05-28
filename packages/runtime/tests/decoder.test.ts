@@ -66,7 +66,8 @@ describe('applyCorrectionPipeline (Ericsson)', () => {
   });
 
   it('stage 1 also handles dashes via preprocess', () => {
-    expect(applyCorrectionPipeline('E325-MM-004005', ericsson)).toEqual({
+    // ハイフン除去 + uppercase で strict regex を通過するパターン
+    expect(applyCorrectionPipeline('e300-mm-999019', ericsson)).toEqual({
       text: 'E300MM999019',
       matchStage: 1,
     });
