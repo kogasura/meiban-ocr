@@ -1,0 +1,17 @@
+{
+  "name": "meiban-ocr-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Browser-friendly alphanumeric OCR for industrial nameplate serials.",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "lint": "pnpm -r run lint",
+    "typecheck": "pnpm -r run typecheck"
+  }
+}

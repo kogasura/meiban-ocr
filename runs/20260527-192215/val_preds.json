@@ -1,0 +1,76 @@
+{
+  "metrics": {
+    "cer": 0.03846153989434242,
+    "wer": 0.4615384638309479,
+    "em": 0.5384615384615384,
+    "avg_loss": 0.18320132791996002,
+    "n_samples": 13
+  },
+  "predictions": [
+    {
+      "pred": "E300MM000028",
+      "gt": "E300MM000028",
+      "correct": true
+    },
+    {
+      "pred": "E300MM999007",
+      "gt": "E300MM000019",
+      "correct": false
+    },
+    {
+      "pred": "E300MM999009",
+      "gt": "E300MM000026",
+      "correct": false
+    },
+    {
+      "pred": "E300MM999005",
+      "gt": "E300MM000024",
+      "correct": false
+    },
+    {
+      "pred": "E300MM000029",
+      "gt": "E300MM000029",
+      "correct": true
+    },
+    {
+      "pred": "E300MM000020",
+      "gt": "E300MM000020",
+      "correct": true
+    },
+    {
+      "pred": "E300MM999012",
+      "gt": "E300MM000027",
+      "correct": false
+    },
+    {
+      "pred": "E300MM999013",
+      "gt": "E300MM000025",
+      "correct": false
+    },
+    {
+      "pred": "E300MM000030",
+      "gt": "E300MM000030",
+      "correct": true
+    },
+    {
+      "pred": "E300MM999006",
+      "gt": "E300MM000021",
+      "correct": false
+    },
+    {
+      "pred": "E300MM000031",
+      "gt": "E300MM000031",
+      "correct": true
+    },
+    {
+      "pred": "E300MM000022",
+      "gt": "E300MM000022",
+      "correct": true
+    },
+    {
+      "pred": "E300MM000023",
+      "gt": "E300MM000023",
+      "correct": true
+    }
+  ]
+}

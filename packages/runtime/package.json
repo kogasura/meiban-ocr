@@ -1,0 +1,47 @@
+{
+  "name": "@meiban-ocr/runtime",
+  "version": "0.2.0",
+  "description": "Browser-friendly alphanumeric OCR runtime (onnxruntime-web).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./detectors/opencv": {
+      "types": "./dist/detectors/opencv-entry.d.ts",
+      "import": "./dist/detectors/opencv-entry.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "bundle-model": "node scripts/bundle-model.mjs",
+    "prebuild": "node scripts/bundle-model.mjs",
+    "build": "vite build && tsc -p tsconfig.build.json --emitDeclarationOnly",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo 'lint not configured yet' && exit 0"
+  },
+  "dependencies": {
+    "onnxruntime-web": "^1.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0",
+    "vitest": "^2.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

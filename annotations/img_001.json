@@ -1,0 +1,385 @@
+{
+  "image": "img_001.jpg",
+  "image_size": [
+    1280,
+    960
+  ],
+  "source_video": null,
+  "ocr_engine": "rapidocr_onnxruntime",
+  "mode": "single",
+  "ocr_elapsed_sec": {
+    "primary": 1.826,
+    "secondary": 0.0
+  },
+  "vendor": "ericsson",
+  "labels": [
+    {
+      "id": 0,
+      "bbox": [
+        382,
+        367,
+        548,
+        401
+      ],
+      "text_bbox": [
+        401,
+        374,
+        529,
+        394
+      ],
+      "text": "E300MM000013",
+      "confidence": 0.9947,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 1,
+      "bbox": [
+        756,
+        362,
+        917,
+        395
+      ],
+      "text_bbox": [
+        774,
+        369,
+        899,
+        388
+      ],
+      "text": "E300MM000001",
+      "confidence": 0.9953,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 2,
+      "bbox": [
+        1010,
+        355,
+        1175,
+        394
+      ],
+      "text_bbox": [
+        1029,
+        363,
+        1156,
+        386
+      ],
+      "text": "E300MM000003",
+      "confidence": 0.9912,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 3,
+      "bbox": [
+        120,
+        370,
+        287,
+        399
+      ],
+      "text_bbox": [
+        139,
+        376,
+        268,
+        393
+      ],
+      "text": "E300MM000008",
+      "confidence": 0.9961,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 4,
+      "bbox": [
+        759,
+        440,
+        919,
+        469
+      ],
+      "text_bbox": [
+        777,
+        446,
+        901,
+        463
+      ],
+      "text": "E300MM000002",
+      "confidence": 0.9965,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 5,
+      "bbox": [
+        1019,
+        436,
+        1178,
+        465
+      ],
+      "text_bbox": [
+        1037,
+        442,
+        1160,
+        459
+      ],
+      "text": "E300MM000004",
+      "confidence": 0.9971,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 6,
+      "bbox": [
+        115,
+        445,
+        284,
+        479
+      ],
+      "text_bbox": [
+        134,
+        452,
+        265,
+        472
+      ],
+      "text": "E300MM000009",
+      "confidence": 0.9941,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 7,
+      "bbox": [
+        1022,
+        508,
+        1189,
+        546
+      ],
+      "text_bbox": [
+        1041,
+        516,
+        1170,
+        538
+      ],
+      "text": "E300MM000005",
+      "confidence": 0.9944,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 8,
+      "bbox": [
+        110,
+        521,
+        280,
+        559
+      ],
+      "text_bbox": [
+        129,
+        529,
+        261,
+        551
+      ],
+      "text": "E300MM000010",
+      "confidence": 0.9591,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 9,
+      "bbox": [
+        383,
+        520,
+        551,
+        563
+      ],
+      "text_bbox": [
+        402,
+        529,
+        532,
+        554
+      ],
+      "text": "E300MM000014",
+      "confidence": 0.9965,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 10,
+      "bbox": [
+        741,
+        582,
+        909,
+        625
+      ],
+      "text_bbox": [
+        760,
+        591,
+        890,
+        616
+      ],
+      "text": "E300MM000017",
+      "confidence": 0.9963,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 11,
+      "bbox": [
+        1027,
+        587,
+        1196,
+        625
+      ],
+      "text_bbox": [
+        1046,
+        595,
+        1177,
+        617
+      ],
+      "text": "E300MM000006",
+      "confidence": 0.9949,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 12,
+      "bbox": [
+        107,
+        603,
+        277,
+        637
+      ],
+      "text_bbox": [
+        126,
+        610,
+        258,
+        630
+      ],
+      "text": "E300MM000011",
+      "confidence": 0.9949,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 13,
+      "bbox": [
+        383,
+        599,
+        551,
+        642
+      ],
+      "text_bbox": [
+        402,
+        608,
+        532,
+        633
+      ],
+      "text": "E300MM000015",
+      "confidence": 0.9958,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 14,
+      "bbox": [
+        748,
+        663,
+        917,
+        706
+      ],
+      "text_bbox": [
+        767,
+        672,
+        898,
+        697
+      ],
+      "text": "E300MM000018",
+      "confidence": 0.9958,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 15,
+      "bbox": [
+        1033,
+        668,
+        1203,
+        707
+      ],
+      "text_bbox": [
+        1052,
+        676,
+        1184,
+        699
+      ],
+      "text": "E300MM000007",
+      "confidence": 0.995,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 16,
+      "bbox": [
+        103,
+        684,
+        273,
+        718
+      ],
+      "text_bbox": [
+        122,
+        691,
+        254,
+        711
+      ],
+      "text": "E300MM000012",
+      "confidence": 0.9962,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 17,
+      "bbox": [
+        382,
+        679,
+        553,
+        723
+      ],
+      "text_bbox": [
+        401,
+        688,
+        534,
+        714
+      ],
+      "text": "E300MM000016",
+      "confidence": 0.997,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    }
+  ],
+  "rejected_by_regex_primary": 89,
+  "claude_verification": {
+    "verifier": "claude-opus-4-7",
+    "verified_at": "2026-05-27",
+    "method": "VLM visual cross-check of OCR output vs image",
+    "result": "all_correct",
+    "notes": "全18件のシリアルが画像内に視認可能・テキスト一致を確認。最低信頼度0.9591 (E300MM000010) も視認OK。"
+  }
+}

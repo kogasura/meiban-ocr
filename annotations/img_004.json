@@ -1,0 +1,85 @@
+{
+  "image": "img_004.jpg",
+  "image_size": [
+    1200,
+    1600
+  ],
+  "source_video": null,
+  "ocr_engine": "rapidocr_onnxruntime",
+  "mode": "single",
+  "ocr_elapsed_sec": {
+    "primary": 1.238,
+    "secondary": 0.0
+  },
+  "vendor": "ericsson",
+  "labels": [
+    {
+      "id": 0,
+      "bbox": [
+        768,
+        9,
+        1138,
+        103
+      ],
+      "text_bbox": [
+        810,
+        29,
+        1096,
+        83
+      ],
+      "text": "E300MM000054",
+      "confidence": 0.9933,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 1,
+      "bbox": [
+        775,
+        574,
+        1161,
+        698
+      ],
+      "text_bbox": [
+        819,
+        600,
+        1117,
+        672
+      ],
+      "text": "E300MM000053",
+      "confidence": 0.9817,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    },
+    {
+      "id": 2,
+      "bbox": [
+        756,
+        781,
+        1122,
+        900
+      ],
+      "text_bbox": [
+        798,
+        806,
+        1080,
+        875
+      ],
+      "text": "E300MM000052",
+      "confidence": 0.9298,
+      "is_clear": true,
+      "match_kind": "strict",
+      "claude_verified": true
+    }
+  ],
+  "rejected_by_regex_primary": 17,
+  "claude_verification": {
+    "verifier": "claude-opus-4-7",
+    "verified_at": "2026-05-27",
+    "method": "VLM visual cross-check of OCR output vs image",
+    "result": "all_correct",
+    "notes": "ジップ袋内に5件以上印字あるが、反射と密閉袋による遮蔽で3件のみ検出 (503514, 503418, 503417)。検出されたものは全て正しいが、3-5件は遮蔽で検出漏れ。検出済みは訓練に使用可。"
+  }
+}
