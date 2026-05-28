@@ -6,7 +6,12 @@ on:
   pull_request:
     branches: [main]
 
-# Why: concurrency cancel — 同じブランチで連続 push したとき、古い run を自動 cancel
+# Why permissions: 明示的に最小権限 (contents:read) に絞る。GitHub 新規 repo は
+# デフォルト read-only だが、設定変更や fork で write になるリスクを防ぐ。
+permissions:
+  contents: read
+
+# Why concurrency cancel: 同じブランチで連続 push したとき、古い run を自動 cancel
 # CI 時間とコストの節約。
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}

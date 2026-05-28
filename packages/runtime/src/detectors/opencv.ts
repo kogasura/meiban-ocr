@@ -209,8 +209,36 @@ export interface LoadOpenCvOptions {
 const DEFAULT_CDN = 'https://docs.opencv.org/4.10.0/opencv.js';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 50;
+const ALLOWED_PROTOCOLS = new Set(['https:', 'http:']);
 
 let _loadingPromise: Promise<unknown> | null = null;
+
+/**
+ * cdnUrl が `<script>.src` に渡される前に scheme を検証する。
+ *
+ * Why: `script.src = userInput` で `javascript:`, `data:` 等が渡ると
+ * 任意 JS 実行されうる (DOM-based XSS)。利用側が untrusted な値を
+ * `loadOpenCv({cdnUrl})` に流したケースを防ぐため、http/https のみ許可。
+ */
+function validateCdnUrl(rawUrl: string): void {
+  let parsed: URL;
+  try {
+    // 相対 URL も解決させる base
+    const base =
+      typeof location !== 'undefined' && location.href
+        ? location.href
+        : 'http://localhost/';
+    parsed = new URL(rawUrl, base);
+  } catch {
+    throw new Error(`loadOpenCv: invalid cdnUrl: ${rawUrl}`);
+  }
+  if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) {
+    throw new Error(
+      `loadOpenCv: unsupported protocol "${parsed.protocol}" in cdnUrl. ` +
+        `Only http and https are allowed.`,
+    );
+  }
+}
 
 export async function loadOpenCv(options: LoadOpenCvOptions = {}): Promise<unknown> {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
@@ -220,6 +248,9 @@ export async function loadOpenCv(options: LoadOpenCvOptions = {}): Promise<unkno
   const cdnUrl = options.cdnUrl ?? DEFAULT_CDN;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const useExisting = options.useExisting ?? true;
+
+  // Security: scheme 検証 (http/https のみ)
+  validateCdnUrl(cdnUrl);
 
   if (useExisting) {
     const existing = (window as unknown as { cv?: { Mat?: unknown } }).cv;

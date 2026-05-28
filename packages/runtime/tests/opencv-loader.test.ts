@@ -15,4 +15,19 @@ describe('loadOpenCv (Node env smoke test)', () => {
     const { loadOpenCv } = await import('../src/detectors/opencv-entry');
     await expect(loadOpenCv()).rejects.toThrow(/browser environment/);
   });
+
+  // Security: cdnUrl の scheme 検証は SSR ガードより**先**に行いたいので、
+  // window 不在のテスト環境でも reject される (validateCdnUrl ではなく SSR ガード経由)。
+  // ここでは validateCdnUrl 自体の直テストは行わず、SSR ガードが先に出ることを確認するに留める。
+  it('rejects suspicious cdnUrl protocols (security, indirect via SSR error or scheme error)', async () => {
+    const { loadOpenCv } = await import('../src/detectors/opencv-entry');
+    for (const bad of [
+      'javascript:alert(1)',
+      'data:text/javascript,alert(1)',
+      'vbscript:foo',
+      'file:///etc/passwd',
+    ]) {
+      await expect(loadOpenCv({ cdnUrl: bad })).rejects.toThrow();
+    }
+  });
 });
