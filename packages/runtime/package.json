@@ -1,8 +1,30 @@
 {
   "name": "@meiban-ocr/runtime",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Browser-friendly alphanumeric OCR runtime (onnxruntime-web).",
   "license": "Apache-2.0",
+  "author": "yuuki-okubo <yuuki1118sss@gmail.com>",
+  "homepage": "https://github.com/kogasura/meiban-ocr#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kogasura/meiban-ocr.git",
+    "directory": "packages/runtime"
+  },
+  "bugs": {
+    "url": "https://github.com/kogasura/meiban-ocr/issues"
+  },
+  "keywords": [
+    "ocr",
+    "onnx",
+    "onnxruntime-web",
+    "webgpu",
+    "crnn",
+    "nameplate",
+    "ericsson",
+    "industrial",
+    "browser",
+    "edge"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
