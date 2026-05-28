@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Why: concurrency cancel — 同じブランチで連続 push したとき、古い run を自動 cancel
+# CI 時間とコストの節約。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    name: Runtime (TypeScript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm -F @meiban-ocr/runtime typecheck
+
+      - name: Test
+        run: pnpm -F @meiban-ocr/runtime test
+
+      # Why: build はモデル ONNX (gitignored) が必要なので CI ではスキップ。
+      # リリース時にローカルで pnpm build → npm publish の流れ。
+      # 将来 ONNX を Git LFS or HF Hub から自動取得する CI を入れたらビルドも追加可。
+
+  # TODO: trainer (Python) jobs — torch/opencv-python の install が ~2-5 分かかるため
+  # 別 workflow にするか、cache 戦略を検討してから追加。
+  # 現在は手元で `cd packages/trainer && PYTHONPATH=src pytest` で確認。

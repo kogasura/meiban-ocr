@@ -1,5 +1,6 @@
 # meiban-ocr
 
+[![CI](https://github.com/kogasura/meiban-ocr/actions/workflows/ci.yml/badge.svg)](https://github.com/kogasura/meiban-ocr/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/@meiban-ocr/runtime.svg)](https://www.npmjs.com/package/@meiban-ocr/runtime)
 [![npm downloads](https://img.shields.io/npm/dm/@meiban-ocr/runtime.svg)](https://www.npmjs.com/package/@meiban-ocr/runtime)
 [![license](https://img.shields.io/npm/l/@meiban-ocr/runtime.svg)](./LICENSE)
