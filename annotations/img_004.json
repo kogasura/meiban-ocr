@@ -73,6 +73,99 @@
       "confidence": 0.9298,
       "match_kind": "strict",
       "claude_verified": true
+    },
+    {
+      "id": 3,
+      "category": "negative",
+      "bbox": [
+        20,
+        1450,
+        350,
+        1580
+      ],
+      "text": "",
+      "subkind": "background",
+      "claude_verified": true
+    },
+    {
+      "id": 4,
+      "category": "negative",
+      "bbox": [
+        900,
+        1450,
+        1180,
+        1580
+      ],
+      "text": "",
+      "subkind": "background",
+      "claude_verified": true
+    },
+    {
+      "id": 5,
+      "category": "negative",
+      "bbox": [
+        350,
+        100,
+        700,
+        260
+      ],
+      "text": "",
+      "subkind": "other_text",
+      "text_visible": "503509 (handwritten)",
+      "claude_verified": true
+    },
+    {
+      "id": 6,
+      "category": "negative",
+      "bbox": [
+        400,
+        420,
+        720,
+        600
+      ],
+      "text": "",
+      "subkind": "other_text",
+      "text_visible": "503505 (handwritten)",
+      "claude_verified": true
+    },
+    {
+      "id": 8,
+      "category": "negative",
+      "bbox": [
+        130,
+        270,
+        230,
+        360
+      ],
+      "text": "",
+      "subkind": "background",
+      "claude_verified": true
+    },
+    {
+      "id": 9,
+      "category": "negative",
+      "bbox": [
+        800,
+        180,
+        1100,
+        300
+      ],
+      "text": "",
+      "subkind": "background",
+      "claude_verified": true
+    },
+    {
+      "id": 10,
+      "category": "negative",
+      "bbox": [
+        800,
+        400,
+        1100,
+        540
+      ],
+      "text": "",
+      "subkind": "background",
+      "claude_verified": true
     }
   ],
   "ocr_engine": "rapidocr_onnxruntime",

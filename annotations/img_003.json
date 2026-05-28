@@ -447,6 +447,58 @@
       "confidence": 0.9949,
       "match_kind": "strict",
       "claude_verified": true
+    },
+    {
+      "id": 20,
+      "category": "negative",
+      "bbox": [
+        20,
+        20,
+        200,
+        120
+      ],
+      "text": "",
+      "subkind": "background",
+      "claude_verified": true
+    },
+    {
+      "id": 21,
+      "category": "negative",
+      "bbox": [
+        1100,
+        20,
+        1270,
+        200
+      ],
+      "text": "",
+      "subkind": "background",
+      "claude_verified": true
+    },
+    {
+      "id": 22,
+      "category": "negative",
+      "bbox": [
+        20,
+        850,
+        250,
+        950
+      ],
+      "text": "",
+      "subkind": "background",
+      "claude_verified": true
+    },
+    {
+      "id": 23,
+      "category": "negative",
+      "bbox": [
+        1050,
+        850,
+        1270,
+        950
+      ],
+      "text": "",
+      "subkind": "background",
+      "claude_verified": true
     }
   ],
   "ocr_engine": "rapidocr_onnxruntime",

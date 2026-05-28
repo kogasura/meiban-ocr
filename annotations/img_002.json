@@ -293,6 +293,182 @@
       "confidence": 0.9957,
       "match_kind": "strict",
       "claude_verified": true
+    },
+    {
+      "id": 13,
+      "category": "negative",
+      "bbox": [
+        20,
+        20,
+        250,
+        110
+      ],
+      "text": "",
+      "subkind": "background",
+      "claude_verified": true
+    },
+    {
+      "id": 14,
+      "category": "negative",
+      "bbox": [
+        600,
+        30,
+        950,
+        130
+      ],
+      "text": "",
+      "subkind": "background",
+      "claude_verified": true
+    },
+    {
+      "id": 15,
+      "category": "negative",
+      "bbox": [
+        1180,
+        10,
+        1270,
+        200
+      ],
+      "text": "",
+      "subkind": "background",
+      "claude_verified": true
+    },
+    {
+      "id": 16,
+      "category": "negative",
+      "bbox": [
+        400,
+        720,
+        700,
+        820
+      ],
+      "text": "",
+      "subkind": "background",
+      "claude_verified": true
+    },
+    {
+      "id": 17,
+      "category": "negative",
+      "bbox": [
+        950,
+        720,
+        1250,
+        820
+      ],
+      "text": "",
+      "subkind": "background",
+      "claude_verified": true
+    },
+    {
+      "id": 18,
+      "category": "negative",
+      "bbox": [
+        20,
+        720,
+        320,
+        850
+      ],
+      "text": "",
+      "subkind": "background",
+      "claude_verified": true
+    },
+    {
+      "id": 19,
+      "category": "negative",
+      "bbox": [
+        145,
+        252,
+        320,
+        273
+      ],
+      "text": "",
+      "subkind": "other_text",
+      "text_visible": "Radio 2218 B42B",
+      "claude_verified": true
+    },
+    {
+      "id": 20,
+      "category": "negative",
+      "bbox": [
+        427,
+        257,
+        600,
+        280
+      ],
+      "text": "",
+      "subkind": "other_text",
+      "text_visible": "Radio 2218 B42B",
+      "claude_verified": true
+    },
+    {
+      "id": 21,
+      "category": "negative",
+      "bbox": [
+        709,
+        248,
+        884,
+        270
+      ],
+      "text": "",
+      "subkind": "other_text",
+      "text_visible": "Radio 2218 B42B",
+      "claude_verified": true
+    },
+    {
+      "id": 22,
+      "category": "negative",
+      "bbox": [
+        1012,
+        232,
+        1184,
+        254
+      ],
+      "text": "",
+      "subkind": "other_text",
+      "text_visible": "Radio 2218 B42B",
+      "claude_verified": true
+    },
+    {
+      "id": 23,
+      "category": "negative",
+      "bbox": [
+        145,
+        328,
+        320,
+        348
+      ],
+      "text": "",
+      "subkind": "other_text",
+      "text_visible": "エリクソン・ジャパン株式会社",
+      "claude_verified": true
+    },
+    {
+      "id": 24,
+      "category": "negative",
+      "bbox": [
+        427,
+        335,
+        600,
+        355
+      ],
+      "text": "",
+      "subkind": "other_text",
+      "text_visible": "エリクソン・ジャパン株式会社",
+      "claude_verified": true
+    },
+    {
+      "id": 25,
+      "category": "negative",
+      "bbox": [
+        145,
+        658,
+        322,
+        680
+      ],
+      "text": "",
+      "subkind": "other_text",
+      "text_visible": "エリクソン・ジャパン株式会社",
+      "claude_verified": true
     }
   ],
   "ocr_engine": "rapidocr_onnxruntime",
