@@ -136,10 +136,11 @@ const ocr = await MeibanOCR.create({ detector: reticleDetector });
   (Reticle 切り出し等) は十分カバーできるため。
 - 移行ガイド: `createOpenCvDetector(cv)` → `DetectorFn` で独自実装、もしくは省略して sliding-window を使う。
 
-## v0.3.0 の制限
+## 制限事項
 
 - **Single product family**: 訓練データは Ericsson 4 製品 (RRU 22F3, RRUS 11 B1, Radio 2218 B42B, Radio 2251 B18 B280) のみ。未学習銘板では精度低下の可能性あり。val_CER 3.85%, val_EM 53.8% (v0 ベンチマーク)。
 - **Model size**: 3 MB FP32 (FP16/INT8 化は次バージョンで検討)。
+- **訓練データの非公開**: photo / 実シリアル番号は公開リポジトリに含まれません (`samples/`, `data/`, `runs/` は gitignored)。詳細は [SECURITY.md](https://github.com/kogasura/meiban-ocr/blob/main/SECURITY.md) を参照。
 
 ## Security considerations
 
