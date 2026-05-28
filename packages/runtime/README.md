@@ -115,6 +115,37 @@ const ocr = await MeibanOCR.create({
 adaptive threshold + morphology + contours で text 行を絞り込み、CRNN を 5〜30 回だけ呼ぶ。
 sliding-window より **20-50倍速**、銘板のような高コントラスト対象では精度も同等以上。
 
+#### Next.js + Turbopack で `fs / path / crypto` 解決エラーになる場合
+
+`@techstark/opencv-js` は Node 組込モジュールを静的 import するため、Turbopack の
+client bundle で `fs can't be resolved` 等が出ることがある。`next.config.{ts,js,mjs}`
+に下記を追加すると解消:
+
+```ts
+const nextConfig: NextConfig = {
+  // ...既存設定...
+  turbopack: {
+    resolveAlias: {
+      fs:     { browser: "data:text/javascript,export default {}" },
+      path:   { browser: "data:text/javascript,export default {}" },
+      crypto: { browser: "data:text/javascript,export default {}" },
+    },
+  },
+  webpack: (config) => {
+    // next build が webpack を使う環境の保険
+    config.resolve = config.resolve || {};
+    config.resolve.fallback = {
+      ...(config.resolve.fallback ?? {}),
+      fs: false, path: false, crypto: false,
+    };
+    return config;
+  },
+  transpilePackages: ["@techstark/opencv-js"],
+};
+```
+
+確認済: Next.js 16 + Turbopack で動作。
+
 ### (3) 独自検出器 (学習済モデル / Reticle 固定 / etc)
 
 ```ts
