@@ -83,101 +83,35 @@ Currently supports **Ericsson** only:
 
 ## 検出器 (Detector) の差し替え (v0.2.0+)
 
-`MeibanOCR.recognize()` は内部で **「全体画像 → 候補テキスト行 bbox 列挙 → CRNN 認識 → 補正」**
-の順に処理する。最初のステップ "候補 bbox 列挙" が **detector** で、3 つの選択肢がある。
+`MeibanOCR.recognize()` は内部で **「入力画像 → 候補テキスト行 bbox 列挙 → CRNN 認識 → 補正」**
+の順に処理する。最初のステップ "候補 bbox 列挙" が **detector** で、2 つの選択肢がある。
 
-### (1) Sliding-window (default、ゼロ依存)
+### (1) Sliding-window (default、ゼロ依存) ★推奨
 
 ```ts
 const ocr = await MeibanOCR.create();  // 省略 = sliding-window
-// or 明示的に
+// or 明示的にチューニング
 import { createSlidingWindowDetector } from '@meiban-ocr/runtime';
 const ocr = await MeibanOCR.create({
   detector: createSlidingWindowDetector({ strideX: 32, strideY: 16 }),
 });
 ```
 
-総当たり方式。Reticle 切り出し済の小入力 (e.g. 600x200) に最適、全体フレームには遅い。
+総当たり方式。**Reticle 切り出し済の小入力 (e.g. 600x200) 用途には最適**。
+外部依存ゼロ・bundle bloat なし。WebGPU でバッチ推論されるので 100-500ms/frame 程度。
 
-### (2) OpenCV.js 古典検出 (v0.2.0 新規、推奨)
+#### Reticle ユースケース (uranus2 等) のチューニング例
 
 ```ts
-import { MeibanOCR } from '@meiban-ocr/runtime';
-import { createOpenCvDetector } from '@meiban-ocr/runtime/detectors/opencv';
-// 利用側が opencv.js を持ち込む (~10MB、本パッケージはバンドルしない)
-import cv from '@techstark/opencv-js';
-
 const ocr = await MeibanOCR.create({
-  detector: createOpenCvDetector(cv),
+  vendor: 'ericsson',
+  detector: { strideX: 24, strideY: 12 },  // 細かめ stride で recall 上げる
+  minConfidence: 0.5,
 });
+const results = await ocr.recognize(reticleCanvas);
 ```
 
-adaptive threshold + morphology + contours で text 行を絞り込み、CRNN を 5〜30 回だけ呼ぶ。
-sliding-window より **20-50倍速**、銘板のような高コントラスト対象では精度も同等以上。
-
-#### npm 経由 ではなく CDN 経由でロード (v0.2.2+)
-
-bundler 設定を触りたくない場合は `loadOpenCv()` で CDN から動的ロードできる:
-
-```ts
-import { MeibanOCR } from '@meiban-ocr/runtime';
-import { createOpenCvDetector, loadOpenCv } from '@meiban-ocr/runtime/detectors/opencv';
-
-// CDN から自動ロード + ready 待ち、再呼び出しは window.cv を再利用
-const cv = await loadOpenCv();
-const ocr = await MeibanOCR.create({ detector: createOpenCvDetector(cv) });
-```
-
-メリット:
-- npm に `@techstark/opencv-js` 等を入れる必要なし
-- Turbopack / Webpack 設定一切不要
-- ブラウザキャッシュが効くので初回以外は高速
-
-デメリット:
-- 初回 ~9MB ダウンロード (オフライン NG)
-- CDN 依存 (外部サービス)
-
-オプション:
-```ts
-await loadOpenCv({
-  cdnUrl: 'https://docs.opencv.org/4.10.0/opencv.js',  // default
-  timeoutMs: 30_000,  // default
-  useExisting: true,  // default; window.cv あれば再利用
-});
-```
-
-#### Next.js + Turbopack で `fs / path / crypto` 解決エラーになる場合
-
-`@techstark/opencv-js` は Node 組込モジュールを静的 import するため、Turbopack の
-client bundle で `fs can't be resolved` 等が出ることがある。`next.config.{ts,js,mjs}`
-に下記を追加すると解消:
-
-```ts
-const nextConfig: NextConfig = {
-  // ...既存設定...
-  turbopack: {
-    resolveAlias: {
-      fs:     { browser: "data:text/javascript,export default {}" },
-      path:   { browser: "data:text/javascript,export default {}" },
-      crypto: { browser: "data:text/javascript,export default {}" },
-    },
-  },
-  webpack: (config) => {
-    // next build が webpack を使う環境の保険
-    config.resolve = config.resolve || {};
-    config.resolve.fallback = {
-      ...(config.resolve.fallback ?? {}),
-      fs: false, path: false, crypto: false,
-    };
-    return config;
-  },
-  transpilePackages: ["@techstark/opencv-js"],
-};
-```
-
-確認済: Next.js 16 + Turbopack で動作。
-
-### (3) 独自検出器 (学習済モデル / Reticle 固定 / etc)
+### (2) 独自検出器 (学習済モデル / Reticle 固定 / OpenCV.js 自作 / etc)
 
 ```ts
 import type { DetectorFn } from '@meiban-ocr/runtime';
@@ -194,11 +128,18 @@ const ocr = await MeibanOCR.create({ detector: reticleDetector });
 
 ---
 
-## v0.2.0 の制限
+## v0.3.0 の変更点 (breaking)
+
+- **OpenCV.js helper を削除**。`createOpenCvDetector` / `loadOpenCv` の export は廃止。
+  独自に OpenCV.js を使いたい場合は `DetectorFn` を自前実装する形に統一。
+- フロントエンド軽量化を最優先する方針。デフォルトの sliding-window で多くのユースケース
+  (Reticle 切り出し等) は十分カバーできるため。
+- 移行ガイド: `createOpenCvDetector(cv)` → `DetectorFn` で独自実装、もしくは省略して sliding-window を使う。
+
+## v0.3.0 の制限
 
 - **Single product family**: 訓練データは Ericsson 4 製品 (RRU 22F3, RRUS 11 B1, Radio 2218 B42B, Radio 2251 B18 B280) のみ。未学習銘板では精度低下の可能性あり。val_CER 3.85%, val_EM 53.8% (v0 ベンチマーク)。
 - **Model size**: 3 MB FP32 (FP16/INT8 化は次バージョンで検討)。
-- **OpenCV detector の場合 opencv.js が peer-dependency 扱い** (本パッケージはバンドルしない、~10MB の利用側ロード必要)。
 
 ## Performance reference (HANDOFF.md 目標値)
 

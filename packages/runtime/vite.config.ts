@@ -8,19 +8,12 @@ export default defineConfig({
   assetsInclude: ['**/*.onnx'],
   build: {
     lib: {
-      // multi-entry: main + opencv detector sub-export
-      // 利用側は `@meiban-ocr/runtime` か `@meiban-ocr/runtime/detectors/opencv` で
-      // それぞれ参照、ツリーシェイクが効く構造。
-      entry: {
-        index: resolve(__dirname, 'src/index.ts'),
-        'detectors/opencv-entry': resolve(
-          __dirname,
-          'src/detectors/opencv-entry.ts',
-        ),
-      },
+      entry: resolve(__dirname, 'src/index.ts'),
+      name: 'MeibanOCR',
       // Why ESM only: CJS で出すと 4MB のモデルチャンクが二重に生成され
       // tarball が肥大化する。Node 20+/モダンbundlerは ESM対応。
       formats: ['es'],
+      fileName: () => 'index.js',
     },
     rollupOptions: {
       external: ['onnxruntime-web'],

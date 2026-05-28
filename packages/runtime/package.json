@@ -1,6 +1,6 @@
 {
   "name": "@meiban-ocr/runtime",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Browser-friendly alphanumeric OCR runtime (onnxruntime-web).",
   "license": "Apache-2.0",
   "author": "yuuki-okubo <yuuki1118sss@gmail.com>",
@@ -33,10 +33,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./detectors/opencv": {
-      "types": "./dist/detectors/opencv-entry.d.ts",
-      "import": "./dist/detectors/opencv-entry.js"
     }
   },
   "files": [
