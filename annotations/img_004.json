@@ -5,16 +5,12 @@
     1600
   ],
   "source_video": null,
-  "ocr_engine": "rapidocr_onnxruntime",
-  "mode": "single",
-  "ocr_elapsed_sec": {
-    "primary": 1.238,
-    "secondary": 0.0
-  },
   "vendor": "ericsson",
-  "labels": [
+  "schema_version": 2,
+  "regions": [
     {
       "id": 0,
+      "category": "positive",
       "bbox": [
         768,
         9,
@@ -28,13 +24,15 @@
         83
       ],
       "text": "E300MM000054",
+      "vendor": "ericsson",
+      "quality": "clear",
       "confidence": 0.9933,
-      "is_clear": true,
       "match_kind": "strict",
       "claude_verified": true
     },
     {
       "id": 1,
+      "category": "positive",
       "bbox": [
         775,
         574,
@@ -48,13 +46,15 @@
         672
       ],
       "text": "E300MM000053",
+      "vendor": "ericsson",
+      "quality": "clear",
       "confidence": 0.9817,
-      "is_clear": true,
       "match_kind": "strict",
       "claude_verified": true
     },
     {
       "id": 2,
+      "category": "positive",
       "bbox": [
         756,
         781,
@@ -68,12 +68,19 @@
         875
       ],
       "text": "E300MM000052",
+      "vendor": "ericsson",
+      "quality": "clear",
       "confidence": 0.9298,
-      "is_clear": true,
       "match_kind": "strict",
       "claude_verified": true
     }
   ],
+  "ocr_engine": "rapidocr_onnxruntime",
+  "mode": "single",
+  "ocr_elapsed_sec": {
+    "primary": 1.238,
+    "secondary": 0.0
+  },
   "rejected_by_regex_primary": 17,
   "claude_verification": {
     "verifier": "claude-opus-4-7",

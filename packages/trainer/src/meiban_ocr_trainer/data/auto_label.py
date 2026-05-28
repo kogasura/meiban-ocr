@@ -5,7 +5,8 @@ URANUS2 OCR エンジン比較レポート (2026-05-27) で RapidOCR が対象�
 100% (20/20) のカバレッジを達成したため、Phase 1 のラベル生成を RapidOCR に置き換える
 (HANDOFF_ADDENDUM.md Plan D「蒸留」を Phase 1 から先取り)。
 
-出力フォーマットは LABELING.md §3 スキーマと同一なので、後段 (extract_crops.py) は無修正で動く。
+出力は annotation v2 schema (`regions[]`) に統一。RapidOCR は positive (Ericsson serial)
+しか検出しないため、negative region は別途 (手作業 or hard negative mining) で追加する。
 
 ダブルチェック方式 (--mode):
 - `single`: RapidOCR 単独。後段で Claude VLM が目視検証する v0 用パス。
@@ -31,12 +32,18 @@ Notes:
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 import time
 from pathlib import Path
 from typing import Iterable
+
+from meiban_ocr_trainer.data.annotation import (
+    Annotation,
+    Region,
+    load_annotation,
+    save_annotation,
+)
 
 # Ericsson 厳格 regex (HANDOFF.md §2, vendorOcrPatterns.ts と一致)
 ERICSSON_STRICT = re.compile(r"^E[39]\d{2}MM\d{6}$")
@@ -137,8 +144,12 @@ def auto_label_image(
     secondary_ocr=None,
     vendor: str = "ericsson",
     iou_threshold: float = 0.5,
-) -> dict:
-    """1画像をOCRに通し、annotation dict を生成。secondary_ocr 指定時は consensus モード。"""
+) -> Annotation:
+    """1画像をOCRに通し、Annotation を生成。secondary_ocr 指定時は consensus モード。
+
+    RapidOCR は Ericsson regex に一致する文字列のみ検出するため、出力は全 positive。
+    negative region は本関数では生成しない (別途手作業 or mining で追加)。
+    """
     from PIL import Image
 
     im = Image.open(image_path)
@@ -185,90 +196,106 @@ def auto_label_image(
             if not s_matched[j]:
                 disagreements.append({"engine": "secondary_only", **cs})
 
-    labels = []
+    regions: list[Region] = []
     for c in accepted:
         text_bbox = c["text_bbox"]
         bbox = _pad_bbox(text_bbox, (w, h))
-        rec = {
-            "id": len(labels),
-            "bbox": list(bbox),
-            "text_bbox": list(text_bbox),
-            "text": c["text"],
-            "confidence": round(c["conf"], 4),
-            "is_clear": c["conf"] >= 0.8,
-            "match_kind": c["match_kind"],
-            "claude_verified": False,
-        }
+        # Why: is_clear == confidence>=0.8 を quality に対応付ける (v1 互換)。
+        quality = "clear" if c["conf"] >= 0.8 else "blur"
+        extra: dict = {}
         if "secondary_conf" in c:
-            rec["secondary_confidence"] = round(c["secondary_conf"], 4)
-            rec["iou_with_secondary"] = c["iou"]
-        labels.append(rec)
+            extra["secondary_confidence"] = round(c["secondary_conf"], 4)
+            extra["iou_with_secondary"] = c["iou"]
+        regions.append(Region(
+            id=len(regions),
+            category="positive",
+            bbox=list(bbox),
+            text_bbox=list(text_bbox),
+            text=c["text"],
+            vendor=vendor,
+            quality=quality,
+            confidence=round(c["conf"], 4),
+            match_kind=c["match_kind"],
+            claude_verified=False,
+            extra=extra,
+        ))
 
     n_rejected_p = len(raw_p) - len(cands_p)
 
-    out: dict = {
-        "image": image_path.name,
-        "image_size": [w, h],
-        "source_video": None,
+    meta: dict = {
         "ocr_engine": "rapidocr_onnxruntime",
         "mode": "consensus" if secondary_ocr is not None else "single",
         "ocr_elapsed_sec": {"primary": round(elapsed_p, 3), "secondary": round(elapsed_s, 3)},
-        "vendor": vendor,
-        "labels": labels,
         "rejected_by_regex_primary": n_rejected_p,
     }
     if secondary_ocr is not None:
-        out["secondary_engine"] = "TBD"
-        out["secondary_candidates_count"] = n_secondary
-        out["disagreements"] = disagreements
-    return out
+        meta["secondary_engine"] = "TBD"
+        meta["secondary_candidates_count"] = n_secondary
+        meta["disagreements"] = disagreements
+
+    return Annotation(
+        image=image_path.name,
+        image_size=[w, h],
+        source_video=None,
+        vendor=vendor,
+        regions=regions,
+        meta=meta,
+    )
 
 
-def write_report(annotations: list[dict], output_dir: Path) -> None:
-    """LABELING.md §Step 4 と同等の _report.md を生成。"""
+def write_report(annotations: list[Annotation], output_dir: Path) -> None:
+    """LABELING.md §Step 4 と同等の _report.md を生成。
+
+    positive region のみ集計 (RapidOCR は positive のみ、negative は別経路)。
+    """
     n_images = len(annotations)
-    n_labels = sum(len(a["labels"]) for a in annotations)
+    pos_per_image = [a.positives for a in annotations]
+    n_pos = sum(len(p) for p in pos_per_image)
     if n_images == 0:
         return
-    high_conf = sum(1 for a in annotations for l in a["labels"] if l["confidence"] >= 0.95)
-    mid_conf = sum(
-        1 for a in annotations for l in a["labels"] if 0.80 <= l["confidence"] < 0.95
-    )
-    low_conf = sum(1 for a in annotations for l in a["labels"] if l["confidence"] < 0.80)
-    is_clear_true = sum(1 for a in annotations for l in a["labels"] if l["is_clear"])
-    is_clear_false = n_labels - is_clear_true
+    n_neg = sum(len(a.negatives) for a in annotations)
 
-    # 重複シリアル検出
-    all_serials = [l["text"] for a in annotations for l in a["labels"]]
+    pos_flat = [r for p in pos_per_image for r in p]
+    high_conf = sum(1 for r in pos_flat if (r.confidence or 0.0) >= 0.95)
+    mid_conf = sum(1 for r in pos_flat if 0.80 <= (r.confidence or 0.0) < 0.95)
+    low_conf = sum(1 for r in pos_flat if (r.confidence or 0.0) < 0.80)
+    clear_true = sum(1 for r in pos_flat if r.quality == "clear")
+    clear_false = n_pos - clear_true
+
+    all_serials = [r.text for r in pos_flat]
     duplicates = sorted({s for s in all_serials if all_serials.count(s) > 1})
 
-    # サンプル別ラベル数 (多い順)
     per_image = sorted(
-        ((Path(a["image"]).name, len(a["labels"])) for a in annotations),
+        ((Path(a.image).name, len(a.positives)) for a in annotations),
         key=lambda x: -x[1],
+    )
+
+    total_elapsed = sum(
+        a.meta.get("ocr_elapsed_sec", {}).get("primary", 0.0) for a in annotations
     )
 
     md = [
         "# Labeling Report (auto-generated by RapidOCR)",
         "",
         f"- 処理画像数: {n_images}",
-        f"- 検出ラベル総数: {n_labels}",
-        f"- 平均ラベル数/画像: {n_labels / n_images:.1f}",
-        f"- 合計OCR時間 (primary): {sum(a['ocr_elapsed_sec']['primary'] for a in annotations):.2f}s",
+        f"- 検出 positive 総数: {n_pos}",
+        f"- 既存 negative 総数: {n_neg}",
+        f"- 平均 positive 数/画像: {n_pos / n_images:.1f}",
+        f"- 合計OCR時間 (primary): {total_elapsed:.2f}s",
         "",
-        "## 信頼度分布",
-        f"- confidence >= 0.95: {high_conf}件 ({100*high_conf/max(n_labels,1):.0f}%)",
+        "## 信頼度分布 (positive)",
+        f"- confidence >= 0.95: {high_conf}件 ({100*high_conf/max(n_pos,1):.0f}%)",
         f"- 0.80 <= confidence < 0.95: {mid_conf}件",
         f"- confidence < 0.80: {low_conf}件",
         "",
-        "## is_clear 分布",
-        f"- true: {is_clear_true}件",
-        f"- false: {is_clear_false}件 (要確認)",
+        "## quality 分布 (positive)",
+        f"- clear: {clear_true}件",
+        f"- blur:  {clear_false}件 (要確認)",
         "",
         "## 警告",
         f"- 重複しているシリアル: {duplicates or 'なし'}",
         "",
-        "## サンプル別ラベル数",
+        "## サンプル別 positive 数",
     ]
     for name, n in per_image:
         md.append(f"- {name}: {n} labels")
@@ -313,13 +340,13 @@ def main(argv: list[str] | None = None) -> int:
     images = sorted(p for p in args.samples_dir.iterdir() if p.suffix.lower() in exts)
     print(f"[auto_label] {len(images)} images to process (mode={args.mode})", file=sys.stderr)
 
-    annotations: list[dict] = []
+    annotations: list[Annotation] = []
     for img in images:
         out_json = args.output_dir / f"{img.stem}.json"
         if out_json.exists():
             print(f"  - {img.name}: SKIP (already labeled)", file=sys.stderr)
-            with out_json.open("r", encoding="utf-8") as f:
-                annotations.append(json.load(f))
+            # 旧 v1 形式でも load_annotation が positive Region に変換する
+            annotations.append(load_annotation(out_json))
             continue
         try:
             ann = auto_label_image(
@@ -329,10 +356,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {img.name}: ERROR {e}", file=sys.stderr)
             continue
         annotations.append(ann)
-        out_json.write_text(json.dumps(ann, ensure_ascii=False, indent=2), encoding="utf-8")
-        elapsed = ann["ocr_elapsed_sec"]["primary"]
+        save_annotation(ann, out_json)
+        elapsed = ann.meta.get("ocr_elapsed_sec", {}).get("primary", 0.0)
         print(
-            f"  - {img.name}: {len(ann['labels'])} labels, "
+            f"  - {img.name}: {len(ann.positives)} labels, "
             f"primary {elapsed:.1f}s",
             file=sys.stderr,
         )

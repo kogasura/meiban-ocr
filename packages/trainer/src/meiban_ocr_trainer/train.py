@@ -27,22 +27,10 @@ from torch.utils.data import DataLoader
 
 from meiban_ocr_trainer.constants import BLANK_IDX
 from meiban_ocr_trainer.data.dataset import build_dataloaders
+from meiban_ocr_trainer.metrics import EvaluationReport, compute_metrics, format_report
 from meiban_ocr_trainer.models import TinyOCRModel
 from meiban_ocr_trainer.tokenizer import CTCTokenizer
-
-
-def _compute_cer(preds: list[str], targets: list[str]) -> float:
-    """文字単位 編集距離 / 参照長 の平均。Lazy import で torchmetrics 依存。"""
-    from torchmetrics.text import CharErrorRate
-
-    cer = CharErrorRate()
-    return float(cer(preds, targets))
-
-
-def _compute_em(preds: list[str], targets: list[str]) -> float:
-    if not targets:
-        return 0.0
-    return sum(p == t for p, t in zip(preds, targets)) / len(targets)
+from meiban_ocr_trainer.vendors import get_vendor
 
 
 def build_optimizer(model: TinyOCRModel, cfg_train: dict) -> torch.optim.Optimizer:
@@ -70,13 +58,20 @@ def evaluate_split(
     loader: DataLoader,
     tokenizer: CTCTokenizer,
     device: torch.device,
-) -> tuple[float, float, float, list[tuple[str, str]]]:
-    """val/test を1周し (CER, EM, avg_loss, [(pred, gt), ...]) を返す。"""
+    vendor_name: str = "ericsson",
+) -> tuple[EvaluationReport, float, list[tuple[str, str, str]]]:
+    """val/test を1周し (EvaluationReport, avg_loss, [(pred, gt, category), ...]) を返す。
+
+    EvaluationReport は positive/negative 別の CER, EM, FPR, Rejection Recall 等を含む。
+    vendor_name で指定したパターンを accept/reject ゲートに使う。
+    """
     model.eval()
     total_loss = 0.0
     total_batches = 0
     preds: list[str] = []
     gts: list[str] = []
+    categories: list[str] = []
+    subkinds: list[str] = []
     with torch.no_grad():
         for batch in loader:
             imgs = batch["images"].to(device)
@@ -96,10 +91,16 @@ def evaluate_split(
             batch_preds = tokenizer.greedy_decode(logits)
             preds.extend(batch_preds)
             gts.extend(batch["texts"])
-    cer = _compute_cer(preds, gts) if preds else 1.0
-    em = _compute_em(preds, gts)
+            categories.extend(batch["categories"])
+            subkinds.extend(batch["subkinds"])
+
+    vendor = get_vendor(vendor_name)
+    report = compute_metrics(
+        preds, gts, categories, subkinds, pattern=vendor.strict_regex,
+    )
     avg_loss = total_loss / max(total_batches, 1)
-    return cer, em, avg_loss, list(zip(preds, gts))
+    samples = list(zip(preds, gts, categories))
+    return report, avg_loss, samples
 
 
 def train_loop(cfg: dict, output_dir: Path) -> dict:
@@ -175,27 +176,35 @@ def train_loop(cfg: dict, output_dir: Path) -> dict:
         train_loss = epoch_loss / max(n_batches, 1)
 
         # Validation
-        val_cer, val_em, val_loss, val_samples = evaluate_split(
-            model, loaders["val"], tokenizer, device
+        val_vendor = cfg.get("data", {}).get("vendor", "ericsson")
+        val_report, val_loss, val_samples = evaluate_split(
+            model, loaders["val"], tokenizer, device, vendor_name=val_vendor,
         )
+        # best 判定は positive CER で行う (negative が無い場合の fallback も含む)
+        val_cer_effective = val_report.cer if val_report.cer is not None else 1.0
         dt = time.time() - t0
         lr_now = optimizer.param_groups[1]["lr"]  # head LR
-        improved = val_cer < best_val_cer - 1e-6
+        improved = val_cer_effective < best_val_cer - 1e-6
 
+        val_em_effective = val_report.em if val_report.em is not None else 0.0
         print(
             f"[epoch {epoch:3d}/{epochs}] train_loss={train_loss:.4f}  "
-            f"val_loss={val_loss:.4f}  val_CER={val_cer:.4f}  val_EM={val_em:.3f}  "
-            f"lr={lr_now:.2e}  dt={dt:.1f}s"
+            f"val_loss={val_loss:.4f}  val_CER={val_cer_effective:.4f}  "
+            f"val_EM={val_em_effective:.3f}  lr={lr_now:.2e}  dt={dt:.1f}s"
             + ("  *best*" if improved else ""),
             file=sys.stderr,
         )
+        # negative がある場合のみ FPR をログに出す (Phase A 直後は 0件のため省略)
+        if val_report.n_neg > 0:
+            print(format_report(val_report, label=f"epoch {epoch} val"), file=sys.stderr)
 
         history.append({
             "epoch": epoch,
             "train_loss": train_loss,
             "val_loss": val_loss,
-            "val_cer": val_cer,
-            "val_em": val_em,
+            "val_cer": val_cer_effective,
+            "val_em": val_em_effective,
+            "val_metrics": val_report.to_dict(),
             "lr_head": lr_now,
             "dt_sec": dt,
         })
@@ -204,16 +213,16 @@ def train_loop(cfg: dict, output_dir: Path) -> dict:
             "epoch": epoch,
             "model_state": model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
-            "val_cer": val_cer,
+            "val_cer": val_cer_effective,
             "config": cfg,
         }, last_path)
         if improved:
-            best_val_cer = val_cer
+            best_val_cer = val_cer_effective
             best_epoch = epoch
             torch.save({
                 "epoch": epoch,
                 "model_state": model.state_dict(),
-                "val_cer": val_cer,
+                "val_cer": val_cer_effective,
                 "config": cfg,
             }, best_path)
             epochs_since_improvement = 0
@@ -230,14 +239,18 @@ def train_loop(cfg: dict, output_dir: Path) -> dict:
     # Why weights_only=True: pickle 経由の任意コード実行を防ぐ。
     ckpt = torch.load(best_path, map_location=device, weights_only=True)
     model.load_state_dict(ckpt["model_state"])
-    test_cer, test_em, test_loss, test_samples = evaluate_split(
-        model, loaders["test"], tokenizer, device
+    test_vendor = cfg.get("data", {}).get("vendor", "ericsson")
+    test_report, test_loss, test_samples = evaluate_split(
+        model, loaders["test"], tokenizer, device, vendor_name=test_vendor,
     )
-    print(f"[train] test_CER={test_cer:.4f}  test_EM={test_em:.3f}  test_loss={test_loss:.4f}",
-          file=sys.stderr)
+    test_cer = test_report.cer if test_report.cer is not None else 1.0
+    test_em = test_report.em if test_report.em is not None else 0.0
+    print(format_report(test_report, label="test"), file=sys.stderr)
+    print(f"[train] test_loss={test_loss:.4f}", file=sys.stderr)
     print("[train] test predictions:", file=sys.stderr)
-    for pred, gt in test_samples:
-        print(f"    pred={pred!r:20s} gt={gt!r}", file=sys.stderr)
+    for pred, gt, cat in test_samples:
+        tag = "POS" if cat == "positive" else "NEG"
+        print(f"    [{tag}] pred={pred!r:20s} gt={gt!r}", file=sys.stderr)
 
     summary = {
         "best_epoch": best_epoch,
@@ -245,7 +258,10 @@ def train_loop(cfg: dict, output_dir: Path) -> dict:
         "test_cer": test_cer,
         "test_em": test_em,
         "test_loss": test_loss,
-        "test_samples": [{"pred": p, "gt": g} for p, g in test_samples],
+        "test_metrics": test_report.to_dict(),
+        "test_samples": [
+            {"pred": p, "gt": g, "category": c} for p, g, c in test_samples
+        ],
         "history": history,
     }
     (output_dir / "summary.json").write_text(

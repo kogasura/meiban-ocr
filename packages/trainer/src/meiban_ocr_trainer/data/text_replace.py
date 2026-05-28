@@ -178,11 +178,13 @@ def augment_dataset(
             relpath = f"train/replaced/{out_name}"
             new_records.append((relpath, new_serial))
 
-    # labels.tsv に追記
+    # labels.tsv に追記 (v2 schema: filename text split source confidence category subkind)
+    # 既存ファイルが v1 (5列) ならヘッダ末尾は category/subkind 列が無いが、DictReader
+    # が許容するため append のみで両立できる。
     with labels_tsv.open("a", encoding="utf-8", newline="") as f:
         w = csv.writer(f, delimiter="\t", lineterminator="\n")
         for relpath, text in new_records:
-            w.writerow([relpath, text, "train", "replaced", 1.0])
+            w.writerow([relpath, text, "train", "replaced", 1.0, "positive", ""])
 
     print(
         f"[text_replace] wrote {len(new_records)} variants from {len(pngs)} real crops",
