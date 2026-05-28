@@ -178,3 +178,83 @@ function computeScale(w: number, h: number, maxDim: number): number {
 function ensureOdd(n: number): number {
   return n % 2 === 0 ? n + 1 : n;
 }
+
+// ─────────────────────────────────────────────────────────────────
+// loadOpenCv(): CDN から opencv.js を遅延ロードし、cv モジュールを返す helper
+// ─────────────────────────────────────────────────────────────────
+//
+// Why: @techstark/opencv-js を npm 経由で入れると、Next.js + Turbopack 等の
+// bundler で fs/path/crypto の解決エラーが出ることがある (Node 組込を静的 import
+// しているため)。CDN ロード方式ならその問題を全部回避できる。
+//
+// Usage:
+//   import { loadOpenCv, createOpenCvDetector } from '@meiban-ocr/runtime/detectors/opencv';
+//   const cv = await loadOpenCv();       // CDN 自動ロード + ready 待ち
+//   const ocr = await MeibanOCR.create({ detector: createOpenCvDetector(cv) });
+//
+// 制限:
+// - 初回はネット必須 (~9MB の opencv.js ダウンロード、以降はブラウザキャッシュ)
+// - SSR コンテキストでは throw (window 必須)
+// - 並列呼び出しは内部で 1 つの promise に集約される (重複ロードなし)
+
+export interface LoadOpenCvOptions {
+  /** opencv.js の CDN URL。デフォルト: docs.opencv.org の 4.10.0。 */
+  cdnUrl?: string;
+  /** ロード完了 (cv.Mat 利用可) までの待ちタイムアウト (ms)。デフォルト 30秒。 */
+  timeoutMs?: number;
+  /** 既存の `window.cv` を再利用するか。デフォルト true。 */
+  useExisting?: boolean;
+}
+
+const DEFAULT_CDN = 'https://docs.opencv.org/4.10.0/opencv.js';
+const DEFAULT_TIMEOUT_MS = 30_000;
+const POLL_INTERVAL_MS = 50;
+
+let _loadingPromise: Promise<unknown> | null = null;
+
+export async function loadOpenCv(options: LoadOpenCvOptions = {}): Promise<unknown> {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    throw new Error('loadOpenCv() requires a browser environment (window/document)');
+  }
+
+  const cdnUrl = options.cdnUrl ?? DEFAULT_CDN;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const useExisting = options.useExisting ?? true;
+
+  if (useExisting) {
+    const existing = (window as unknown as { cv?: { Mat?: unknown } }).cv;
+    if (existing?.Mat) return existing;
+  }
+
+  if (_loadingPromise) return _loadingPromise;
+
+  _loadingPromise = (async () => {
+    // Why: 既存 script タグがあれば再注入しない (二重ロード回避)
+    const existingScript = document.querySelector(
+      `script[data-meiban-opencv-cdn="${cdnUrl}"]`,
+    );
+    if (!existingScript) {
+      const script = document.createElement('script');
+      script.src = cdnUrl;
+      script.async = true;
+      script.dataset['meibanOpencvCdn'] = cdnUrl;
+      document.head.appendChild(script);
+    }
+
+    const start = Date.now();
+    while (true) {
+      const cv = (window as unknown as { cv?: { Mat?: unknown } }).cv;
+      if (cv?.Mat) return cv;
+      if (Date.now() - start > timeoutMs) {
+        _loadingPromise = null; // 失敗時は次回再試行可
+        throw new Error(
+          `loadOpenCv: timed out after ${timeoutMs}ms (cv.Mat never appeared). ` +
+            `Verify CDN reachable: ${cdnUrl}`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    }
+  })();
+
+  return _loadingPromise;
+}

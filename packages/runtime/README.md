@@ -115,6 +115,37 @@ const ocr = await MeibanOCR.create({
 adaptive threshold + morphology + contours で text 行を絞り込み、CRNN を 5〜30 回だけ呼ぶ。
 sliding-window より **20-50倍速**、銘板のような高コントラスト対象では精度も同等以上。
 
+#### npm 経由 ではなく CDN 経由でロード (v0.2.2+)
+
+bundler 設定を触りたくない場合は `loadOpenCv()` で CDN から動的ロードできる:
+
+```ts
+import { MeibanOCR } from '@meiban-ocr/runtime';
+import { createOpenCvDetector, loadOpenCv } from '@meiban-ocr/runtime/detectors/opencv';
+
+// CDN から自動ロード + ready 待ち、再呼び出しは window.cv を再利用
+const cv = await loadOpenCv();
+const ocr = await MeibanOCR.create({ detector: createOpenCvDetector(cv) });
+```
+
+メリット:
+- npm に `@techstark/opencv-js` 等を入れる必要なし
+- Turbopack / Webpack 設定一切不要
+- ブラウザキャッシュが効くので初回以外は高速
+
+デメリット:
+- 初回 ~9MB ダウンロード (オフライン NG)
+- CDN 依存 (外部サービス)
+
+オプション:
+```ts
+await loadOpenCv({
+  cdnUrl: 'https://docs.opencv.org/4.10.0/opencv.js',  // default
+  timeoutMs: 30_000,  // default
+  useExisting: true,  // default; window.cv あれば再利用
+});
+```
+
 #### Next.js + Turbopack で `fs / path / crypto` 解決エラーになる場合
 
 `@techstark/opencv-js` は Node 組込モジュールを静的 import するため、Turbopack の
