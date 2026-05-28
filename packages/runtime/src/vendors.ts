@@ -9,7 +9,7 @@
 export interface VendorPattern {
   vendorId: number;
   vendorName: string;
-  /** Strict regex: 全体一致用。本番DBで悉皆検証済み (Ericsson 300,374件)。 */
+  /** Strict regex: 全体一致用。 */
   strictRegex: RegExp;
   /** Partial regex: 全文字列の中からシリアルを抜き出す用 (anchor なし)。 */
   partialRegex: RegExp;

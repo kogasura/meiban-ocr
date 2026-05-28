@@ -141,6 +141,60 @@ const ocr = await MeibanOCR.create({ detector: reticleDetector });
 - **Single product family**: 訓練データは Ericsson 4 製品 (RRU 22F3, RRUS 11 B1, Radio 2218 B42B, Radio 2251 B18 B280) のみ。未学習銘板では精度低下の可能性あり。val_CER 3.85%, val_EM 53.8% (v0 ベンチマーク)。
 - **Model size**: 3 MB FP32 (FP16/INT8 化は次バージョンで検討)。
 
+## Security considerations
+
+### `OCRResult.text` は untrusted な出力として扱うこと
+
+`recognize()` の返却 `text` は、ユーザーがカメラ撮影した任意画像から抽出された
+文字列です。攻撃者が **意図的な文字列を印字したラベルを撮影させる** ことで、
+任意文字列を `OCRResult.text` 経由でアプリに注入する余地があります。
+
+DO:
+- `textContent` プロパティ / React の `{text}` 補間 (自動エスケープされる)
+- SQL は parameterized query
+- log では quote / escape
+
+DON'T:
+- `el.innerHTML = result.text`
+- `eval`, `Function`, `setTimeout(string)` に渡す
+- shell command / SQL に直接埋め込む
+
+### `modelUrl` / `modelBytes` は信頼するソースからのみ
+
+`MeibanOCR.create({ modelUrl })` の引数は scheme 検証 (`http:` / `https:` / `data:` /
+`blob:` のみ許可) されますが、**host の whitelist は無し**です。
+利用側は untrusted な値 (URL クエリパラメータ等) を直接渡さないこと:
+
+```ts
+// ❌ 危険: 攻撃者が ?model= で任意 ONNX を指定可能
+const modelUrl = new URLSearchParams(location.search).get('model');
+await MeibanOCR.create({ modelUrl });
+
+// ✅ 自分で管理する CDN のみ
+await MeibanOCR.create({ modelUrl: 'https://cdn.example.com/meiban/model.onnx' });
+
+// ✅ 整合性検証して bytes で渡す (推奨)
+const expectedSha = 'a1b2c3...';
+const response = await fetch('https://cdn.example.com/model.onnx');
+const buf = await response.arrayBuffer();
+const hash = await crypto.subtle.digest('SHA-256', buf);
+// hash を expectedSha と照合してから:
+await MeibanOCR.create({ modelBytes: buf });
+```
+
+### ONNX モデル整合性
+
+現状の bundled モデル (`@meiban-ocr/runtime` に inline されている data URL) は
+SRI 不可です。npm パッケージ自体の `integrity` (`shasum`/`sha512`) は npm
+レジストリで検証されるため、`npm install --ignore-scripts` 等の通常導入なら問題なし。
+さらに強い検証が必要なら `modelBytes` 経由で消費側 SHA-256 検証を行ってください。
+
+### 報告窓口
+
+脆弱性を発見したら **public issue ではなく** GitHub Private Vulnerability Reporting
+で報告してください: <https://github.com/kogasura/meiban-ocr/security/advisories/new>
+詳細は [`SECURITY.md`](https://github.com/kogasura/meiban-ocr/blob/main/SECURITY.md) を参照。
+
 ## Performance reference (HANDOFF.md 目標値)
 
 1440×1080 nameplate sheet、20 ラベル想定:

@@ -144,9 +144,14 @@ export class MeibanOCR {
   private static resolveVendor(v?: 'ericsson' | VendorPattern): VendorPattern {
     if (!v) return ericsson;
     if (typeof v === 'string') {
-      const p = VENDOR_PATTERNS[v];
-      if (!p) throw new Error(`unknown vendor: ${v}`);
-      return p;
+      // Why Object.hasOwn: `VENDOR_PATTERNS[v]` を直接索引すると
+      // v = '__proto__' / 'constructor' / 'toString' 等の prototype member
+      // でも値が返ってしまい、後続の `.strictRegex.test(...)` が TypeError
+      // になり DoS 経路となる。Object.hasOwn で own-property 限定。
+      if (!Object.hasOwn(VENDOR_PATTERNS, v)) {
+        throw new Error(`unknown vendor: ${v}`);
+      }
+      return VENDOR_PATTERNS[v]!;
     }
     return v;
   }

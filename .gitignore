@@ -47,10 +47,12 @@ packages/runtime/src/assets/*.onnx
 /models/*
 !/models/.gitkeep
 
-# Training runs (大型 checkpoint は除外、メタデータだけ commit)
-runs/*/*.pt
-runs/*/last.pt
-runs/*/best.pt
+# Training runs (全アーティファクトを除外)
+# Why: val_preds.json / summary.json / README.md に model predictions
+# (training data に由来する real-looking serial) が記録されるため、
+# 公開リポジトリに含めない方針。共有が必要な metrics は別途
+# packages/trainer/README.md / 各 release ノートに sanitize 済みで記述。
+/runs/
 
 # Misc
 .DS_Store
