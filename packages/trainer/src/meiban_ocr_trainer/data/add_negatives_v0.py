@@ -60,14 +60,13 @@ NEGATIVES_TO_ADD: dict[str, list[tuple[list[int], str, str | None]]] = {
         # background: ウッド/デスク表面
         ([20, 1450, 350, 1580], "background", None),
         ([900, 1450, 1180, 1580], "background", None),
-        # other_text: 白カード上の手書きテキスト
-        # "503509" 手書き: 画像右側中段、横倒し気味
-        ([350, 100, 700, 260], "other_text", "503509 (handwritten)"),
-        # "503505" 手書き: 中央付近
-        ([400, 420, 720, 600], "other_text", "503505 (handwritten)"),
-        # NOTE: "E326MM503410" 印字 (縦書き) は Ericsson strict pattern と一致してしまい、
-        # 負例として学習させると pattern 認識を破壊するので除外。手書きの個別数字 (503509,
-        # 503505) は pattern 全体に一致しないため負例化 OK。
+        # other_text: 白カード上の手書きテキスト (実数字は redact 済み)
+        ([350, 100, 700, 260], "other_text", "(handwritten digits, redacted)"),
+        ([400, 420, 720, 600], "other_text", "(handwritten digits, redacted)"),
+        # NOTE: 白カード上に Ericsson strict pattern (^E[39]\\d{2}MM\\d{6}$) 一致の縦書き
+        # 印字あり。負例化すると pattern 認識を破壊するため除外。
+        # 手書き数字は pattern 全体に一致しないため negative 化 OK だが、リアル数字を
+        # ソース/JSON に書き戻すと info disclosure になるため redact 表記に統一する。
         # 白カードのピンクドット領域 (テクスチャ無しほぼ単色)
         ([130, 270, 230, 360], "background", None),
         # 袋背景 (positive ラベルの間、textがほぼ無い領域)
