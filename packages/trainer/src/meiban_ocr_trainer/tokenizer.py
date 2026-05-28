@@ -56,6 +56,25 @@ class CTCTokenizer:
         Returns:
             デコードされた文字列のリスト (length B)。
         """
+        results = self.greedy_decode_with_conf(logits)
+        return [text for text, _ in results]
+
+    def greedy_decode_with_conf(
+        self, logits: torch.Tensor,
+    ) -> list[tuple[str, float]]:
+        """Greedy CTC decode + per-sample mean confidence.
+
+        confidence は「出力文字に貢献した non-blank timestep の softmax 最大確率の平均」。
+        空出力 (CTC が全 blank を出した) の場合は **全 timestep の (1 - blank prob) 平均**
+        を「reject 確信度」として返す (1 に近いほど自信を持って空を選んだ)。
+        スコア範囲: [0, 1].
+
+        Args:
+            logits: (B, T, C). softmax 前の raw logits を想定。
+
+        Returns:
+            [(decoded_text, mean_confidence), ...] の長さ B。
+        """
         if logits.ndim != 3:
             raise ValueError(f"logits must be 3D, got shape {tuple(logits.shape)}")
         if logits.shape[-1] != self.num_classes:
@@ -63,17 +82,31 @@ class CTCTokenizer:
                 f"last dim must be num_classes={self.num_classes}, "
                 f"got {logits.shape[-1]}"
             )
-        # (B, T, C) → (B, T)
-        best = logits.argmax(dim=-1).cpu().tolist()
-        out: list[str] = []
-        for seq in best:
+        probs = torch.softmax(logits, dim=-1).cpu()  # (B, T, C)
+        best_idx = probs.argmax(dim=-1)  # (B, T)
+        best_prob = probs.gather(-1, best_idx.unsqueeze(-1)).squeeze(-1)  # (B, T)
+
+        out: list[tuple[str, float]] = []
+        for b in range(probs.shape[0]):
+            seq = best_idx[b].tolist()
+            confs = best_prob[b].tolist()
+            blank_probs = probs[b, :, self.blank_idx].tolist()
+
             prev = -1
             chars: list[str] = []
-            for idx in seq:
+            char_confs: list[float] = []
+            for t, idx in enumerate(seq):
                 if idx != prev and idx != self.blank_idx:
                     chars.append(self.charset[idx])
+                    char_confs.append(confs[t])
                 prev = idx
-            out.append("".join(chars))
+
+            if chars:
+                conf = sum(char_confs) / len(char_confs)
+            else:
+                # 全 blank → reject 確信度 (= blank prob の平均)
+                conf = sum(blank_probs) / len(blank_probs)
+            out.append(("".join(chars), float(conf)))
         return out
 
 

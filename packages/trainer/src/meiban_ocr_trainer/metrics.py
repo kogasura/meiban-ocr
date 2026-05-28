@@ -102,6 +102,8 @@ def compute_metrics(
     categories: list[str],
     subkinds: list[str] | None = None,
     pattern: re.Pattern[str] | None = None,
+    confidences: list[float] | None = None,
+    confidence_threshold: float | None = None,
 ) -> EvaluationReport:
     """予測リストから per-category 指標を計算。
 
@@ -112,6 +114,11 @@ def compute_metrics(
         subkinds: 各サンプルの subkind (negative のみ意味あり)
         pattern: accept/reject ゲートに使う vendor の strict regex。
                  None の場合は acceptance ベース指標が None になる。
+        confidences: 各サンプルのモデル出力 confidence (0-1)。tokenizer の
+                     `greedy_decode_with_conf` から取得した値を想定。
+        confidence_threshold: confidence ゲートの閾値。`confidences` と両方指定された
+                              場合、accept = pattern_match AND (confidence >= threshold)
+                              となる。どちらかが None なら confidence ゲートは無効化。
     """
     n = len(predictions)
     if not (n == len(ground_truths) == len(categories)):
@@ -123,12 +130,28 @@ def compute_metrics(
         subkinds = [""] * n
     elif len(subkinds) != n:
         raise ValueError(f"subkinds length {len(subkinds)} != preds {n}")
+    if confidences is not None and len(confidences) != n:
+        raise ValueError(f"confidences length {len(confidences)} != preds {n}")
     for c in categories:
         if c not in ("positive", "negative"):
             raise ValueError(f"unknown category: {c!r}")
 
+    use_conf_gate = (
+        confidences is not None and confidence_threshold is not None
+    )
+
     def is_pattern_match(s: str) -> bool:
+        # 単純な pattern match (confidence は見ない)。
+        # FPR_pattern と RejectionRecall は pattern のみで定義。
         return bool(pattern.match(s)) if (pattern is not None and s) else False
+
+    def is_accepted(idx: int) -> bool:
+        """accept ゲート: pattern match (+ optional confidence threshold)。"""
+        if not is_pattern_match(predictions[idx]):
+            return False
+        if use_conf_gate and confidences[idx] < confidence_threshold:
+            return False
+        return True
 
     # positive 側集計
     pos_indices = [i for i, c in enumerate(categories) if c == "positive"]
@@ -145,7 +168,7 @@ def compute_metrics(
             n_pos,
         )
         if pattern is not None:
-            pos_accepted = [i for i in pos_indices if is_pattern_match(predictions[i])]
+            pos_accepted = [i for i in pos_indices if is_accepted(i)]
             n_acc = len(pos_accepted)
             acceptance_recall = _safe_div(n_acc, n_pos)
             em_among_accepted = (
@@ -168,8 +191,11 @@ def compute_metrics(
         n_neg_nonempty = sum(1 for i in neg_indices if predictions[i])
         fpr_nonempty = _safe_div(n_neg_nonempty, n_neg)
         if pattern is not None:
-            n_neg_pattern = sum(1 for i in neg_indices if is_pattern_match(predictions[i]))
-            fpr_pattern = _safe_div(n_neg_pattern, n_neg)
+            # FPR_pattern は **accept ゲート** (pattern + 任意で confidence) で算出。
+            # confidence threshold を入れると FPR が下がる方向に動くので、
+            # gate を変えた効果がそのままここに反映される。
+            n_neg_accepted = sum(1 for i in neg_indices if is_accepted(i))
+            fpr_pattern = _safe_div(n_neg_accepted, n_neg)
             rejection_recall = 1.0 - fpr_pattern
 
         bucket: dict[str, PerSubkindStat] = defaultdict(PerSubkindStat)
@@ -179,7 +205,7 @@ def compute_metrics(
             stat.n += 1
             if not predictions[i]:
                 stat.n_empty += 1
-            if is_pattern_match(predictions[i]):
+            if is_accepted(i):
                 stat.n_pattern_match += 1
         per_subkind = {
             k: {

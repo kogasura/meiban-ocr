@@ -125,7 +125,12 @@ def build_dataloaders(
     batch_size: int = 64,
     num_workers: int = 4,
 ) -> dict[str, torch.utils.data.DataLoader]:
-    """train/val/test の DataLoader を一括構築。"""
+    """train/val/test の DataLoader を一括構築。
+
+    train loader は通常の shuffle=True。curriculum (neg_ratio 動的制御) を使う場合は
+    train_loop 側で本関数の train loader を捨て、`build_train_loader_with_ratio()` で
+    epoch ごとに再構築する。
+    """
     from functools import partial
 
     from torch.utils.data import DataLoader
@@ -161,3 +166,102 @@ def build_dataloaders(
             collate_fn=collate,
         ),
     }
+
+
+def build_train_loader_with_ratio(
+    train_ds: RecognitionDataset,
+    tokenizer: CTCTokenizer,
+    batch_size: int,
+    neg_ratio: float,
+    num_workers: int = 0,
+    num_samples: int | None = None,
+) -> torch.utils.data.DataLoader:
+    """positive/negative 比率を `neg_ratio` に制御する WeightedRandomSampler 付き train loader。
+
+    Args:
+        train_ds: 訓練データセット
+        batch_size: バッチサイズ
+        neg_ratio: 1 batch あたりの期待 negative 割合 (0.0〜1.0)。0.0 だと positive only。
+        num_workers: worker 数 (per-epoch 再構築されるので persistent_workers は無効)
+        num_samples: epoch あたりサンプル数。None なら len(train_ds) × (1 batch 内
+                     positive 数を確保するスケール) で算出。
+
+    Why WeightedRandomSampler:
+        small dataset で positive と negative の数に大きな偏りがある時、ratio を強制する
+        手段。`replacement=True` で同じサンプルが複数回出ても OK (epoch 単位ではなく
+        「ステップ数 = num_samples / batch_size」と解釈)。
+    """
+    from functools import partial
+
+    from torch.utils.data import DataLoader, WeightedRandomSampler
+
+    # 各サンプルの category
+    cats = [row.get("category") or "positive" for row in train_ds.rows]
+    n_pos = sum(1 for c in cats if c == "positive")
+    n_neg = len(cats) - n_pos
+
+    if n_neg == 0 or n_pos == 0:
+        # 片方しかない → uniform sampling
+        weights = [1.0] * len(cats)
+    elif neg_ratio <= 0.0:
+        # warmup 期: positive のみサンプリング (negative の weight を 0 にする)
+        weights = [1.0 if c == "positive" else 0.0 for c in cats]
+    elif neg_ratio >= 1.0:
+        # 全 negative (理論上のみ、安全側に倒す)
+        weights = [0.0 if c == "positive" else 1.0 for c in cats]
+    else:
+        # weight 設計: sum(weights for positive) = (1 - neg_ratio), sum(neg) = neg_ratio
+        # → 各 positive の weight = (1 - neg_ratio) / n_pos, 各 negative = neg_ratio / n_neg
+        pos_w = (1.0 - neg_ratio) / n_pos
+        neg_w = neg_ratio / n_neg
+        weights = [pos_w if c == "positive" else neg_w for c in cats]
+
+    # epoch あたりステップ数: 元データセットと同じくらいの「1 epoch 感」を保つ
+    if num_samples is None:
+        num_samples = len(train_ds)
+
+    sampler = WeightedRandomSampler(
+        weights=weights,
+        num_samples=num_samples,
+        replacement=True,
+    )
+
+    collate = partial(ctc_collate, tokenizer=tokenizer)
+    return DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        sampler=sampler,
+        num_workers=num_workers,
+        collate_fn=collate,
+        drop_last=True,
+    )
+
+
+def neg_ratio_for_epoch(schedule: list[dict], epoch: int) -> float:
+    """curriculum schedule から指定 epoch の neg_ratio を線形補間で取得。
+
+    schedule 例:
+        [{"epoch": 1, "ratio": 0.0},
+         {"epoch": 6, "ratio": 0.0},     # epoch 1-5 は完全 positive
+         {"epoch": 16, "ratio": 0.30},   # epoch 6-15 で 0 → 0.30 線形上昇
+         {"epoch": 40, "ratio": 0.40}]   # epoch 16-40 で 0.30 → 0.40 緩やかに
+
+    epoch が schedule の範囲外 (前後) なら端点の値を返す。
+    schedule が空なら 0.0 を返す。
+    """
+    if not schedule:
+        return 0.0
+    sorted_sched = sorted(schedule, key=lambda x: int(x["epoch"]))
+    if epoch <= int(sorted_sched[0]["epoch"]):
+        return float(sorted_sched[0]["ratio"])
+    if epoch >= int(sorted_sched[-1]["epoch"]):
+        return float(sorted_sched[-1]["ratio"])
+    for i in range(len(sorted_sched) - 1):
+        a, b = sorted_sched[i], sorted_sched[i + 1]
+        ae, be = int(a["epoch"]), int(b["epoch"])
+        if ae <= epoch <= be:
+            if be == ae:
+                return float(a["ratio"])
+            t = (epoch - ae) / (be - ae)
+            return float(a["ratio"]) + t * (float(b["ratio"]) - float(a["ratio"]))
+    return float(sorted_sched[-1]["ratio"])

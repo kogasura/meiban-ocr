@@ -131,3 +131,82 @@ def test_ctc_loss_finite_on_all_negative_batch() -> None:
         blank=BLANK_IDX, zero_infinity=True,
     )
     assert torch.isfinite(loss)
+
+
+# ---------- curriculum / ratio control ----------
+
+def test_neg_ratio_for_epoch_endpoints_and_interpolation() -> None:
+    from meiban_ocr_trainer.data.dataset import neg_ratio_for_epoch
+
+    sched = [
+        {"epoch": 1, "ratio": 0.0},
+        {"epoch": 5, "ratio": 0.0},
+        {"epoch": 15, "ratio": 0.30},
+        {"epoch": 40, "ratio": 0.40},
+    ]
+    # 端点・範囲外
+    assert neg_ratio_for_epoch(sched, 0) == 0.0
+    assert neg_ratio_for_epoch(sched, 1) == 0.0
+    assert neg_ratio_for_epoch(sched, 100) == 0.40
+
+    # warmup 範囲は 0.0 維持
+    assert neg_ratio_for_epoch(sched, 3) == 0.0
+    assert neg_ratio_for_epoch(sched, 5) == 0.0
+
+    # 5→15 で 0 → 0.30 の線形補間
+    assert abs(neg_ratio_for_epoch(sched, 10) - 0.15) < 1e-6
+    assert abs(neg_ratio_for_epoch(sched, 15) - 0.30) < 1e-6
+
+    # 15→40 で 0.30 → 0.40 の線形補間
+    assert abs(neg_ratio_for_epoch(sched, 25) - (0.30 + (10 / 25) * 0.10)) < 1e-6
+
+
+def test_neg_ratio_empty_schedule_returns_zero() -> None:
+    from meiban_ocr_trainer.data.dataset import neg_ratio_for_epoch
+    assert neg_ratio_for_epoch([], 5) == 0.0
+
+
+def test_curriculum_sampler_respects_neg_ratio(v2_dataset_root: Path) -> None:
+    """build_train_loader_with_ratio で neg_ratio=0.5 を強制したとき、サンプリングが
+    数値的にだいたい半々になる (n_samples を大きめに取って統計的に確認)。
+    """
+    from meiban_ocr_trainer.data.dataset import (
+        RecognitionDataset,
+        build_train_loader_with_ratio,
+    )
+
+    tok = CTCTokenizer()
+    ds = RecognitionDataset(v2_dataset_root, "train", tok)
+    # 統計安定化のため batch_size=10、num_samples=1000 で 100 ステップ回す
+    loader = build_train_loader_with_ratio(
+        ds, tok, batch_size=10, neg_ratio=0.5,
+        num_workers=0, num_samples=1000,
+    )
+
+    cat_counter: dict[str, int] = {"positive": 0, "negative": 0}
+    for batch in loader:
+        for c in batch["categories"]:
+            cat_counter[c] += 1
+    total = sum(cat_counter.values())
+    neg_frac = cat_counter["negative"] / total
+    # 0.5 ± 0.05 程度を許容 (n=1000 のばらつき)
+    assert 0.45 < neg_frac < 0.55, f"neg_frac={neg_frac:.3f}"
+
+
+def test_curriculum_sampler_zero_ratio_yields_only_positive(v2_dataset_root: Path) -> None:
+    """neg_ratio=0.0 のとき (warmup 期) negative は全く混入しない。"""
+    from meiban_ocr_trainer.data.dataset import (
+        RecognitionDataset,
+        build_train_loader_with_ratio,
+    )
+
+    tok = CTCTokenizer()
+    ds = RecognitionDataset(v2_dataset_root, "train", tok)
+    loader = build_train_loader_with_ratio(
+        ds, tok, batch_size=10, neg_ratio=0.0,
+        num_workers=0, num_samples=200,
+    )
+    n_neg = 0
+    for batch in loader:
+        n_neg += sum(1 for c in batch["categories"] if c == "negative")
+    assert n_neg == 0

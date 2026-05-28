@@ -1,5 +1,6 @@
 data:
   root: data/recognition
+  vendor: ericsson  # 評価指標の strict_regex に使う
 model:
   num_classes: 37
   rnn_hidden: 128
@@ -14,6 +15,16 @@ train:
   num_workers: 4
   freeze_backbone_epochs: 2
   early_stopping_patience: 30
+  # Reject 訓練の curriculum (Phase B+)。空 [] にすると無効化 (positive only)。
+  # 線形補間で epoch ごとの neg_ratio を計算する。
+  neg_ratio_schedule:
+    - { epoch: 1,  ratio: 0.00 }   # warmup: positive only
+    - { epoch: 5,  ratio: 0.00 }
+    - { epoch: 15, ratio: 0.30 }   # 段階的に neg を投入
+    - { epoch: 40, ratio: 0.40 }   # 最終 ratio (reject 優先で高めに設定)
+  # 評価ゲートに confidence threshold を追加。null で無効化。
+  # FPR_pattern を下げる目的。runtime 側も同 threshold で gate するのが想定。
+  confidence_threshold: 0.70
 runtime:
   device: cpu
   seed: 42

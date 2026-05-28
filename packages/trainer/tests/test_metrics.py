@@ -111,3 +111,66 @@ def test_no_pattern_disables_acceptance_metrics() -> None:
 def test_length_mismatch_raises() -> None:
     with pytest.raises(ValueError, match="length mismatch"):
         compute_metrics(["a"], ["b", "c"], ["positive"])
+
+
+# ---------- confidence gate ----------
+
+def test_confidence_gate_rejects_low_conf_positive() -> None:
+    """positive で pattern OK でも confidence < threshold なら accepted から落ちる。"""
+    preds = ["E300MM000001", "E300MM000002"]
+    gts = ["E300MM000001", "E300MM000002"]
+    cats = ["positive", "positive"]
+    confs = [0.95, 0.5]  # 2件目は低信頼
+
+    rep = compute_metrics(
+        preds, gts, cats,
+        pattern=ERICSSON.strict_regex,
+        confidences=confs, confidence_threshold=0.7,
+    )
+    # acceptance_recall: 1/2 (低信頼は落ちる)
+    assert rep.acceptance_recall == 0.5
+    # em_among_accepted: 1/1 = 1.0 (accepted 1件は正解)
+    assert rep.em_among_accepted == 1.0
+
+
+def test_confidence_gate_lowers_fpr_pattern() -> None:
+    """negative の誤受容も confidence が低ければ救われる → FPR_pattern 改善。"""
+    preds = ["E300MM999999", "E300MM888888"]  # 両方 pattern OK
+    gts = ["", ""]
+    cats = ["negative", "negative"]
+    confs = [0.95, 0.4]  # 2件目は低信頼
+
+    # gate=pattern only
+    rep_no_gate = compute_metrics(
+        preds, gts, cats, pattern=ERICSSON.strict_regex,
+    )
+    assert rep_no_gate.fpr_pattern == 1.0  # 両方誤受容
+
+    # gate=pattern + confidence
+    rep_with_gate = compute_metrics(
+        preds, gts, cats, pattern=ERICSSON.strict_regex,
+        confidences=confs, confidence_threshold=0.7,
+    )
+    assert rep_with_gate.fpr_pattern == 0.5  # 1件だけ誤受容
+    assert rep_with_gate.rejection_recall == 0.5
+
+
+def test_confidence_gate_no_effect_without_threshold() -> None:
+    """confidences だけ渡しても threshold が None なら gate は無効。"""
+    preds = ["E300MM999999"]
+    gts = [""]
+    cats = ["negative"]
+    rep = compute_metrics(
+        preds, gts, cats, pattern=ERICSSON.strict_regex,
+        confidences=[0.1], confidence_threshold=None,
+    )
+    assert rep.fpr_pattern == 1.0
+
+
+def test_confidence_gate_length_mismatch_raises() -> None:
+    with pytest.raises(ValueError, match="confidences length"):
+        compute_metrics(
+            ["a"], [""], ["negative"],
+            pattern=ERICSSON.strict_regex,
+            confidences=[0.5, 0.6], confidence_threshold=0.7,
+        )
