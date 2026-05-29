@@ -1,10 +1,23 @@
-"""CTC tokenizer: 文字列 ⇔ ラベルID列。"""
+"""文字列 ⇔ ラベル ID 列の変換。
+
+2 つのトークナイザを提供:
+- CTCTokenizer: CRNN+CTC (可変長、blank クラス) 用。TinyOCRModel と組み合わせる。
+- FixedLengthTokenizer: 12-head 固定長 (各位置 13 クラス、∅ クラス) 用。FixedHeadOCR と組み合わせる。
+"""
 
 from __future__ import annotations
 
 import torch
 
-from meiban_ocr_trainer.constants import BLANK_IDX, CHARSET, NUM_CLASSES
+from meiban_ocr_trainer.constants import (
+    BLANK_IDX,
+    CHARSET,
+    CHARSET_12H,
+    EMPTY_IDX,
+    FIXED_LENGTH,
+    NUM_CLASSES,
+    NUM_CLASSES_12H,
+)
 
 
 class CTCTokenizer:
@@ -110,4 +123,130 @@ class CTCTokenizer:
         return out
 
 
-__all__ = ["CTCTokenizer", "BLANK_IDX", "CHARSET", "NUM_CLASSES"]
+class FixedLengthTokenizer:
+    """12-position fixed-length tokenizer (Ericsson serial 専用、charset 12 文字 + ∅)。
+
+    encode: 文字列 → 長さ FIXED_LENGTH の固定 ID 列
+        - text="" or 空文字: 全位置が EMPTY_IDX (= reject 目標)
+        - text="E300MM000001": 各位置の char→idx + 残りは EMPTY_IDX
+        - text 長 > FIXED_LENGTH: ValueError
+        - char が CHARSET_12H 外: ValueError
+
+    decode: (B, L, C) logits → 文字列リスト
+        - 各位置 argmax → EMPTY_IDX なら出力に含めない
+        - 全位置が EMPTY_IDX なら空文字 (構造的 reject)
+    """
+
+    def __init__(
+        self,
+        charset: str = CHARSET_12H,
+        empty_idx: int = EMPTY_IDX,
+        fixed_length: int = FIXED_LENGTH,
+    ) -> None:
+        if empty_idx != len(charset):
+            raise ValueError(
+                f"empty_idx ({empty_idx}) must equal len(charset) ({len(charset)})"
+            )
+        self.charset = charset
+        self.empty_idx = empty_idx
+        self.fixed_length = fixed_length
+        self.num_classes = empty_idx + 1
+        self._char_to_idx = {c: i for i, c in enumerate(charset)}
+
+    def encode(self, text: str) -> list[int]:
+        """文字列を長さ fixed_length のラベル列に変換 (足りない位置は EMPTY_IDX)。"""
+        if len(text) > self.fixed_length:
+            raise ValueError(
+                f"text length {len(text)} exceeds fixed_length {self.fixed_length}"
+            )
+        ids: list[int] = []
+        for c in text:
+            try:
+                ids.append(self._char_to_idx[c])
+            except KeyError as e:
+                raise ValueError(
+                    f"character {e.args[0]!r} not in CHARSET_12H ({self.charset!r})"
+                ) from e
+        # ∅ で右パディング
+        ids += [self.empty_idx] * (self.fixed_length - len(ids))
+        return ids
+
+    def encode_batch(self, texts: list[str]) -> torch.Tensor:
+        """バッチエンコード。Returns (B, fixed_length) long tensor。"""
+        return torch.tensor([self.encode(t) for t in texts], dtype=torch.long)
+
+    def decode(self, logits: torch.Tensor) -> list[str]:
+        """Fixed-length decode: 各位置 argmax → ∅ を除いた文字を連結。
+
+        Args:
+            logits: (B, L, C). L = fixed_length, C = num_classes.
+
+        Returns:
+            デコードされた文字列のリスト (length B)。全位置 ∅ なら空文字。
+        """
+        results = self.decode_with_conf(logits)
+        return [text for text, _ in results]
+
+    def decode_with_conf(
+        self, logits: torch.Tensor,
+    ) -> list[tuple[str, float]]:
+        """Fixed-length decode + per-sample confidence。
+
+        confidence は以下のロジック:
+        - 出力ありの場合: 非 ∅ 位置の softmax max 確率の平均
+        - 空出力 (全位置 ∅) の場合: 全位置の ∅ 確率の平均 (= reject 確信度)
+
+        Args:
+            logits: (B, L, C) raw logits.
+
+        Returns:
+            [(decoded_text, confidence), ...] (length B)。
+        """
+        if logits.ndim != 3:
+            raise ValueError(f"logits must be 3D, got shape {tuple(logits.shape)}")
+        if logits.shape[-1] != self.num_classes:
+            raise ValueError(
+                f"last dim must be num_classes={self.num_classes}, "
+                f"got {logits.shape[-1]}"
+            )
+        if logits.shape[1] != self.fixed_length:
+            raise ValueError(
+                f"sequence length must be fixed_length={self.fixed_length}, "
+                f"got {logits.shape[1]}"
+            )
+
+        probs = torch.softmax(logits, dim=-1).cpu()
+        best_idx = probs.argmax(dim=-1)
+        best_prob = probs.gather(-1, best_idx.unsqueeze(-1)).squeeze(-1)
+
+        out: list[tuple[str, float]] = []
+        for b in range(probs.shape[0]):
+            seq = best_idx[b].tolist()
+            confs = best_prob[b].tolist()
+            chars: list[str] = []
+            char_confs: list[float] = []
+            for idx, p in zip(seq, confs):
+                if idx == self.empty_idx:
+                    continue
+                chars.append(self.charset[idx])
+                char_confs.append(p)
+            if chars:
+                conf = sum(char_confs) / len(char_confs)
+            else:
+                empty_probs = probs[b, :, self.empty_idx].tolist()
+                conf = sum(empty_probs) / len(empty_probs)
+            out.append(("".join(chars), float(conf)))
+        return out
+
+
+__all__ = [
+    "CTCTokenizer",
+    "FixedLengthTokenizer",
+    "BLANK_IDX",
+    "CHARSET",
+    "NUM_CLASSES",
+    "CHARSET_12H",
+    "EMPTY_IDX",
+    "NUM_CLASSES_12H",
+    "FIXED_LENGTH",
+]

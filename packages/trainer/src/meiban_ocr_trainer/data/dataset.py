@@ -119,6 +119,37 @@ def ctc_collate(
     }
 
 
+def fixed_length_collate(
+    batch: list[tuple[torch.Tensor, dict]],
+    tokenizer: "FixedLengthTokenizer",  # type: ignore[name-defined]
+) -> dict:
+    """12-head 固定長モデル用 collate (Phase 2b)。
+
+    target_lengths は不要 (全サンプル長は fixed_length 固定)。代わりに `targets` が
+    (B, fixed_length) の long tensor になる。CTC との大きな違い。
+
+    Returns dict:
+        images:     (B, 1, H, W)
+        targets:    (B, fixed_length) long  ← negative は全位置 EMPTY_IDX
+        texts:      list[str]
+        categories: list[str]
+        subkinds:   list[str]
+        sources:    list[str]
+    """
+    imgs = torch.stack([b[0] for b in batch])
+    metas = [b[1] for b in batch]
+    texts = [m["text"] for m in metas]
+    targets = tokenizer.encode_batch(texts)  # (B, fixed_length)
+    return {
+        "images": imgs,
+        "targets": targets,
+        "texts": texts,
+        "categories": [m["category"] for m in metas],
+        "subkinds": [m["subkind"] for m in metas],
+        "sources": [m["source"] for m in metas],
+    }
+
+
 def build_dataloaders(
     root: Path,
     tokenizer: CTCTokenizer,
