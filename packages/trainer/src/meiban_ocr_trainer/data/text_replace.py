@@ -42,12 +42,22 @@ DEFAULT_FONTS = [
 
 
 def generate_random_ericsson_serial(rng: random.Random | None = None) -> str:
-    """Ericsson パターン `/^E[39]\\d{2}MM\\d{6}$/` に従う架空シリアル生成。"""
+    """Dummy 範囲 `^E300MM\\d{6}$` のみを生成 (Iter5 v5 #8 fix)。
+
+    Why: 旧版は `E[39]\\d{2}MM\\d{6}` 全空間 (2×10⁸) から一様抽出していたが、
+    本番 Ericsson serial も同じ空間に存在する (300K件、衝突確率 0.15%) ため、
+    1000枚の synth 生成で確率的に ~1-2 件の実シリアル衝突が起きうる。
+    `vendors.ts` で「実 serial = E[39]\\d{2}MM\\d{6}」が定義されており、
+    dummy 専用に `E300MM\\d{6}` を予約する SECURITY.md 方針と整合させる。
+
+    Trade-off: prefix 多様性 (2 × 10² = 200 種) を捨てるが、suffix の 10⁶ 種で
+    文字バランス学習には十分。実際の本番でモデルが見るのは E[39]\\d{2}MM\\d{6}
+    全空間だが、prefix 4 字 "E300" は固定でもデコーダの CTC 学習を破壊しない
+    (suffix 部分のみ可変なので char-level の多様性は維持される)。
+    """
     rng = rng or random.Random()
-    prefix = rng.choice(["E3", "E9"])
-    middle = "".join(rng.choices("0123456789", k=2))
     suffix = "".join(rng.choices("0123456789", k=6))
-    return f"{prefix}{middle}MM{suffix}"
+    return f"E300MM{suffix}"
 
 
 def _sample_background_color(img: np.ndarray) -> tuple[int, int, int]:

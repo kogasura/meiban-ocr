@@ -6,7 +6,8 @@
 
 | Version | Status |
 |---|---|
-| **0.3.1** | **active (recommended)** |
+| **0.3.2** | **active (recommended)** |
+| 0.3.1 | superseded — `dist/vendors.d.ts` had a stale internal-figures comment; upgrade to 0.3.2 |
 | 0.3.0 | deprecated — missing `modelUrl` scheme validation |
 | ≤ 0.2.3 | deprecated — missing `cdnUrl` scheme validation (v0.2.0-0.2.2) or missing `modelUrl` validation (v0.2.3) |
 
@@ -111,6 +112,68 @@ pointing at your own internally-trained model.
 If you discover a synthetic dummy value (`E300MM...`) that collides with a real
 production serial unknown to us, please report it via the vulnerability channel
 above so we can switch the dummy range.
+
+## Publish checklist (maintainer)
+
+Steps to publish a new version of `@meiban-ocr/runtime`:
+
+1. Bump `packages/runtime/package.json` version field.
+2. Verify training source data: any new `runs/<run>/best.pt` you intend to bundle
+   must pass:
+
+   ```bash
+   python -m meiban_ocr_trainer.tools.check_no_memorized_prefix \
+       runs/<run>/summary.json
+   ```
+
+   This blocks export if predictions contain Ericsson-pattern prefixes outside
+   the `E300MM\d{6}` dummy range. `export.py` runs the same gate automatically
+   when `summary.json` is next to the checkpoint (`--skip-memorization-check`
+   to bypass for debug only).
+
+3. Build and pack:
+
+   ```bash
+   cd packages/runtime
+   pnpm run build      # also triggers prebuild (bundle-model)
+   pnpm pack           # produces meiban-ocr-runtime-<ver>.tgz
+   ```
+
+4. **ASCII sweep tarball** before publishing (Iter5 v5 #5):
+
+   ```bash
+   tgz=meiban-ocr-runtime-<ver>.tgz
+   tar tzf "$tgz" | sort                                              # whitelist check
+   tar xzf "$tgz" -O package/dist/vendors.d.ts | grep -nE '300,374|本番'  # → 0 hits
+   tar xzf "$tgz" --to-stdout | strings | \
+       grep -nE 'E[39][0-9]{2}MM[0-9]{6}'                              # → 0 hits
+   ```
+
+   If any of these hit, **abort** and clean dist before re-packing.
+
+5. `prepublishOnly` hook in `packages/runtime/package.json` already runs
+   `typecheck && test && build` automatically on `pnpm publish`. Verify the
+   hook is intact:
+
+   ```bash
+   node -e "console.log(require('./package.json').scripts.prepublishOnly)"
+   ```
+
+6. Publish:
+
+   ```bash
+   pnpm publish        # or: npm publish
+   ```
+
+7. After publish:
+
+   ```bash
+   npm view @meiban-ocr/runtime@latest version   # → expected new version
+   npm view @meiban-ocr/runtime@<new> deprecated # → empty string
+   ```
+
+8. Update this `SECURITY.md` table (Supported versions) and document any
+   breaking-policy change in `CHANGELOG.md` if applicable.
 
 ## License
 

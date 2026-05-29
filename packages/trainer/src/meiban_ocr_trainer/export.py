@@ -166,6 +166,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--validate-data", type=Path, default=None,
                         help="data/recognition root; if given, run CER comparison")
     parser.add_argument("--validate-split", type=str, default="val")
+    parser.add_argument(
+        "--skip-memorization-check", action="store_true",
+        help=(
+            "Skip the v5 #9 memorization gate (= summary.json prefix check). "
+            "Use only for debug/regression test."
+        ),
+    )
     args = parser.parse_args(argv)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -173,6 +180,34 @@ def main(argv: list[str] | None = None) -> int:
     simplified_path = args.output_dir / f"{args.name}.fp32.sim.onnx"
     fp16_path = args.output_dir / f"{args.name}.fp16.onnx"
     final_path = args.output_dir / f"{args.name}.onnx"
+
+    # v5 #9 fix: 同じディレクトリの summary.json に memorize 痕跡があれば export を阻止。
+    # checkpoint と summary は同じ run dir に出力されるので、まずそこを見る。
+    summary_candidate = args.checkpoint.parent / "summary.json"
+    if summary_candidate.exists() and not args.skip_memorization_check:
+        # Why ローカル import: tools ディレクトリは optional path、import 経路を遅延させる
+        from meiban_ocr_trainer.tools.check_no_memorized_prefix import check_summary
+        is_clean, leaks = check_summary(summary_candidate)
+        if not is_clean:
+            print(
+                f"[export] BLOCKED: {summary_candidate} has {len(leaks)} memorized "
+                f"non-dummy prefix(es). Refusing to export this checkpoint.",
+                file=sys.stderr,
+            )
+            for leak in leaks[:5]:
+                print(
+                    f"    [{leak.get('source')}] pred={leak.get('pred')!r}",
+                    file=sys.stderr,
+                )
+            print(
+                "\nIf you must bypass (e.g., debug), pass --skip-memorization-check.",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"[export] memorization gate PASS for {summary_candidate}",
+            file=sys.stderr,
+        )
 
     device = torch.device("cpu")
     print(f"[export] loading checkpoint: {args.checkpoint}", file=sys.stderr)

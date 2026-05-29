@@ -209,6 +209,33 @@ def test_text_visible_rejects_long_digit_sequence() -> None:
         )
 
 
+def test_positive_text_rejects_non_dummy_pattern() -> None:
+    """positive text は E300MM\\d{6} dummy 範囲のみ許可 (v5 #6)。"""
+    # vendor 形式だが E300MM 以外 → 拒否
+    with pytest.raises(ValueError, match="dummy pattern"):
+        Region(
+            id=0, category="positive", bbox=[0, 0, 10, 10],
+            text="E305MM999999",
+        )
+    # vendor 形式外 (任意文字列) → 拒否
+    with pytest.raises(ValueError, match="dummy pattern"):
+        Region(
+            id=1, category="positive", bbox=[0, 0, 10, 10],
+            text="ARBITRARY",
+        )
+    # 桁数違い → 拒否
+    with pytest.raises(ValueError, match="dummy pattern"):
+        Region(
+            id=2, category="positive", bbox=[0, 0, 10, 10],
+            text="E300MM12345",  # 5 桁
+        )
+    # 正しい dummy → OK
+    Region(
+        id=3, category="positive", bbox=[0, 0, 10, 10],
+        text="E300MM000001",
+    )
+
+
 def test_text_visible_allows_safe_strings() -> None:
     """公開情報や redact 済表記は通る。"""
     # 製品モデル名 / 法人名
@@ -252,7 +279,7 @@ def test_unknown_region_fields_preserved_in_extra(tmp_path: Path) -> None:
         "regions": [
             {
                 "id": 0, "category": "positive",
-                "bbox": [0, 0, 5, 5], "text": "A",
+                "bbox": [0, 0, 5, 5], "text": "E300MM000001",
                 "mined_from": "run_2026_05_28",
                 "iou_with_secondary": 0.92,
             }

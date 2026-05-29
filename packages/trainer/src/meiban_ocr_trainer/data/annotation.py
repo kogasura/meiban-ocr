@@ -64,6 +64,12 @@ _TEXT_VISIBLE_FORBIDDEN_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\d{5,}"),
 )
 
+# positive region の `text` (= ground truth serial) に許容される pattern。
+# v5 #6 fix: dummy 範囲 `^E300MM\d{6}$` のみ。本番 Ericsson serial (E[39]\d{2}MM\d{6})
+# は CLAUDE.md / SECURITY.md で禁止されており、本来 annotations に commit されない
+# べきだが、annotation.py 経由で防御層を一段追加する (CI lint と二重)。
+_ALLOWED_POSITIVE_TEXT = re.compile(r"^E300MM\d{6}$")
+
 # 画像レベルのメタキー (loader/saver で破壊しない)
 _PRESERVED_META_KEYS = (
     "ocr_engine",
@@ -104,10 +110,19 @@ class Region:
             raise ValueError(
                 f"negative region id={self.id} must have empty text, got {self.text!r}"
             )
-        if self.category == "positive" and not self.text:
-            raise ValueError(
-                f"positive region id={self.id} must have non-empty text"
-            )
+        if self.category == "positive":
+            if not self.text:
+                raise ValueError(
+                    f"positive region id={self.id} must have non-empty text"
+                )
+            # v5 #6 fix: positive text は dummy 範囲のみ許可。real Ericsson serial
+            # (E305MM, E326MM 等) を annotations に commit する経路を遮断する。
+            if not _ALLOWED_POSITIVE_TEXT.match(self.text):
+                raise ValueError(
+                    f"positive region id={self.id} text must match dummy pattern "
+                    f"^E300MM\\d{{6}}$, got {self.text!r}. "
+                    f"Real Ericsson serials must not be committed (see SECURITY.md)."
+                )
         # info disclosure 防止: text_visible にリアル数字や vendor pattern を入れない。
         # Why: text_visible は学習に使われないが public JSON commit に含まれるため、
         # 顧客現場の手書きシリアルや末尾数字を書き戻すと info leak になる。
