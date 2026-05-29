@@ -11,8 +11,9 @@ from meiban_ocr_trainer.vendors import ERICSSON
 
 
 def test_all_positive_perfect() -> None:
-    preds = ["E300MM000001", "E900MM000002"]
-    gts = ["E300MM000001", "E900MM000002"]
+    # 2 つの distinct な dummy serial で完全正解パスを検証
+    preds = ["E300MM000001", "E300MM000002"]
+    gts = ["E300MM000001", "E300MM000002"]
     cats = ["positive", "positive"]
     rep = compute_metrics(preds, gts, cats, pattern=ERICSSON.strict_regex)
     assert rep.cer == 0.0
