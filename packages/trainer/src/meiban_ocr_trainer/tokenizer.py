@@ -190,11 +190,19 @@ class FixedLengthTokenizer:
     def decode_with_conf(
         self, logits: torch.Tensor,
     ) -> list[tuple[str, float]]:
-        """Fixed-length decode + per-sample confidence。
+        """Fixed-length decode + per-sample aggregated confidence。
 
-        confidence は以下のロジック:
-        - 出力ありの場合: 非 ∅ 位置の softmax max 確率の平均
-        - 空出力 (全位置 ∅) の場合: 全位置の ∅ 確率の平均 (= reject 確信度)
+        confidence の集約方式 (Phase 2c, 業界ベスト + 我々の要件):
+
+            confidence = min(geomean(top1), min(top1))   全 12 位置を対象 (∅ 含む)
+
+        - geomean(top1): EasyOCR と同等。全体的に「そこそこ高い」を要求 = 独立性仮定での
+          全体正解確率 (= prod(top1)) を 12 乗根で位置あたりに正規化したもの。
+        - min(top1): 弱点位置の確率。「1 文字でも怪しければ全体を落とす」要件を直接表現。
+        - **両者の min を取る**: 厳しい側を採用、false-accept を最優先で避ける方針と整合。
+
+        ∅ 位置も集約対象に含める (旧版は除外していた): ∅ が低 prob で出るのは混乱の証拠、
+        ∅ が高 prob で出るのは構造異常、いずれも reject 方向に倒したい。
 
         Args:
             logits: (B, L, C) raw logits.
@@ -216,27 +224,96 @@ class FixedLengthTokenizer:
             )
 
         probs = torch.softmax(logits, dim=-1).cpu()
-        best_idx = probs.argmax(dim=-1)
-        best_prob = probs.gather(-1, best_idx.unsqueeze(-1)).squeeze(-1)
+        best_idx = probs.argmax(dim=-1)             # (B, L)
+        best_prob = probs.gather(-1, best_idx.unsqueeze(-1)).squeeze(-1)  # (B, L)
 
         out: list[tuple[str, float]] = []
         for b in range(probs.shape[0]):
             seq = best_idx[b].tolist()
-            confs = best_prob[b].tolist()
-            chars: list[str] = []
-            char_confs: list[float] = []
-            for idx, p in zip(seq, confs):
-                if idx == self.empty_idx:
-                    continue
-                chars.append(self.charset[idx])
-                char_confs.append(p)
-            if chars:
-                conf = sum(char_confs) / len(char_confs)
-            else:
-                empty_probs = probs[b, :, self.empty_idx].tolist()
-                conf = sum(empty_probs) / len(empty_probs)
-            out.append(("".join(chars), float(conf)))
+            # text: 非 ∅ 位置だけ連結 (∅ は文字なし)
+            chars = [self.charset[idx] for idx in seq if idx != self.empty_idx]
+
+            # confidence: 全 12 位置の top1 prob から min(geomean, min)
+            top1 = best_prob[b]                     # (L,)
+            log_top1 = torch.log(top1.clamp_min(1e-9))
+            geomean = float(torch.exp(log_top1.mean()))
+            min_top1 = float(top1.min())
+            conf = min(geomean, min_top1)
+
+            out.append(("".join(chars), conf))
         return out
+
+    def decode_detailed(
+        self, logits: torch.Tensor,
+    ) -> list[dict]:
+        """全位置の詳細情報を返す版 (runtime API 設計用)。
+
+        Returns:
+            [
+              {
+                "text": "E300MM000001",
+                "confidence": 0.92,           # min(geomean, min)
+                "geomean": 0.95,              # 参考
+                "min_top1": 0.92,             # 参考
+                "min_margin": 0.85,           # top1 - top2 の最小
+                "per_position": [
+                  {"char": "E" or None for ∅, "top1": 0.99, "top2_char": "∅",
+                   "top2": 0.01, "margin": 0.98},
+                  ...
+                ],
+              },
+              ...
+            ]
+
+        この豊富な出力を integration 側に渡すと、用途に応じた gate 設計が可能になる。
+        """
+        if logits.ndim != 3:
+            raise ValueError(f"logits must be 3D, got shape {tuple(logits.shape)}")
+
+        probs = torch.softmax(logits, dim=-1).cpu()
+        top2_vals, top2_idx = probs.topk(2, dim=-1)  # both (B, L, 2)
+
+        results: list[dict] = []
+        for b in range(probs.shape[0]):
+            chars: list[str] = []
+            per_pos: list[dict] = []
+            top1_list: list[float] = []
+            margin_list: list[float] = []
+            for t in range(self.fixed_length):
+                idx1 = int(top2_idx[b, t, 0])
+                idx2 = int(top2_idx[b, t, 1])
+                p1 = float(top2_vals[b, t, 0])
+                p2 = float(top2_vals[b, t, 1])
+                if idx1 != self.empty_idx:
+                    chars.append(self.charset[idx1])
+                per_pos.append({
+                    "char": self.charset[idx1] if idx1 != self.empty_idx else None,
+                    "top1": p1,
+                    "top2_char": (
+                        self.charset[idx2] if idx2 != self.empty_idx else None
+                    ),
+                    "top2": p2,
+                    "margin": p1 - p2,
+                })
+                top1_list.append(p1)
+                margin_list.append(p1 - p2)
+
+            import math
+            log_top1 = [math.log(max(p, 1e-9)) for p in top1_list]
+            geomean = math.exp(sum(log_top1) / len(log_top1))
+            min_top1 = min(top1_list)
+            min_margin = min(margin_list)
+            conf = min(geomean, min_top1)
+
+            results.append({
+                "text": "".join(chars),
+                "confidence": conf,
+                "geomean": geomean,
+                "min_top1": min_top1,
+                "min_margin": min_margin,
+                "per_position": per_pos,
+            })
+        return results
 
 
 __all__ = [

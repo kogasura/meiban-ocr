@@ -31,6 +31,7 @@ import torch.nn.functional as F
 import yaml
 from torch.utils.data import DataLoader
 
+from meiban_ocr_trainer.constants import EMPTY_IDX, NUM_CLASSES_12H
 from meiban_ocr_trainer.data.augment import build_eval_transform, build_train_transform
 from meiban_ocr_trainer.data.dataset import (
     RecognitionDataset,
@@ -114,6 +115,7 @@ def evaluate_split(
     device: torch.device,
     vendor_name: str = "ericsson",
     confidence_threshold: float | None = None,
+    class_weights: torch.Tensor | None = None,
 ) -> tuple[EvaluationReport, EvaluationReport | None, float, list[dict]]:
     """val/test を 1 周し、pattern only / pattern+conf の 2 ゲートで評価。"""
     model.eval()
@@ -134,6 +136,7 @@ def evaluate_split(
             loss = F.cross_entropy(
                 logits.reshape(-1, logits.size(-1)),
                 targets.reshape(-1),
+                weight=class_weights,
             )
             total_loss += float(loss.item())
             total_batches += 1
@@ -176,6 +179,19 @@ def train_loop(cfg: dict, output_dir: Path, use_rnn: bool = False) -> dict:
         confidence_threshold = float(confidence_threshold)
     neg_ratio_schedule = cfg["train"].get("neg_ratio_schedule") or []
     val_vendor = cfg.get("data", {}).get("vendor", "ericsson")
+
+    # ∅ クラス weighting (Phase 2b 改善): 12-head の ∅ class を CE loss で過剰に重み付け、
+    # 「ゴミを吐く」より「∅ を選ぶ」方向にバイアスをかける。1.0 で無効化。
+    empty_class_weight = float(cfg["train"].get("empty_class_weight", 1.0))
+    class_weights = None
+    if empty_class_weight != 1.0:
+        class_weights = torch.ones(NUM_CLASSES_12H, device=device)
+        class_weights[EMPTY_IDX] = empty_class_weight
+        print(
+            f"[train_fixed_head] CE class weights: ∅ class = {empty_class_weight}, "
+            f"others = 1.0",
+            file=sys.stderr,
+        )
 
     train_ds = RecognitionDataset(
         data_root, "train", transform=build_train_transform(),
@@ -257,6 +273,7 @@ def train_loop(cfg: dict, output_dir: Path, use_rnn: bool = False) -> dict:
             loss = F.cross_entropy(
                 logits.reshape(-1, logits.size(-1)),
                 targets.reshape(-1),
+                weight=class_weights,
             )
             optimizer.zero_grad()
             loss.backward()
@@ -272,6 +289,7 @@ def train_loop(cfg: dict, output_dir: Path, use_rnn: bool = False) -> dict:
             model, val_loader, tokenizer, device,
             vendor_name=val_vendor,
             confidence_threshold=confidence_threshold,
+            class_weights=class_weights,
         )
         val_cer_effective = val_rep_p.cer if val_rep_p.cer is not None else 1.0
         val_em_effective = val_rep_p.em if val_rep_p.em is not None else 0.0
@@ -355,6 +373,7 @@ def train_loop(cfg: dict, output_dir: Path, use_rnn: bool = False) -> dict:
         model, test_loader, tokenizer, device,
         vendor_name=val_vendor,
         confidence_threshold=confidence_threshold,
+        class_weights=class_weights,
     )
     test_cer = test_rep_p.cer if test_rep_p.cer is not None else 1.0
     test_em = test_rep_p.em if test_rep_p.em is not None else 0.0
@@ -410,6 +429,17 @@ def main(argv: list[str] | None = None) -> int:
                         help="default: runs/YYYYMMDD-HHMMSS_fh")
     parser.add_argument("--use-rnn", action="store_true",
                         help="enable optional BiGRU (default: off, smaller params)")
+    parser.add_argument(
+        "--empty-class-weight", type=float, default=None,
+        help=(
+            "∅ class weight in CE loss. Default 1.0 (= no weighting). "
+            "Try 2.0-5.0 to push the model toward structural ∅ usage on negatives."
+        ),
+    )
+    parser.add_argument(
+        "--patience", type=int, default=None,
+        help="Override early stopping patience (default: from config, usually 30)",
+    )
     args = parser.parse_args(argv)
 
     if not args.config.exists():
@@ -420,6 +450,10 @@ def main(argv: list[str] | None = None) -> int:
         cfg["train"]["epochs"] = args.epochs
     if args.batch_size is not None:
         cfg["train"]["batch_size"] = args.batch_size
+    if args.empty_class_weight is not None:
+        cfg["train"]["empty_class_weight"] = args.empty_class_weight
+    if args.patience is not None:
+        cfg["train"]["early_stopping_patience"] = args.patience
 
     output_dir = args.output_dir or (
         Path(cfg["output"]["runs_dir"]) / (time.strftime("%Y%m%d-%H%M%S") + "_fh")

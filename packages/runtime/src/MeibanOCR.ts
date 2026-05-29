@@ -12,8 +12,8 @@
 
 import * as ort from 'onnxruntime-web';
 
-import { CHARSET, NUM_CLASSES } from './constants';
-import { applyCorrectionPipeline, ctcGreedyDecode } from './decoder';
+import { NUM_CLASSES } from './constants';
+import { applyCorrectionPipeline, ctcGreedyDecodeWithConfidence } from './decoder';
 import { nmsByText, type ScoredDetection } from './detectors/nms';
 import {
   createSlidingWindowDetector,
@@ -184,15 +184,17 @@ export class MeibanOCR {
       const flatLogits = logits.data as Float32Array;
       for (let b = 0; b < B; b++) {
         const slice = flatLogits.subarray(b * T * C, (b + 1) * T * C);
-        const raw = ctcGreedyDecode(slice, T, C);
+        // decode と confidence 集約を 1 pass で。
+        // confidence = min(geomean(top1), min(top1)) on non-blank timesteps.
+        // 旧 mean (= 弱位置希釈) を置き換え、false-accept 最小化方針と整合させる。
+        const { text: raw, confidence } = ctcGreedyDecodeWithConfidence(slice, T, C);
         const corr = applyCorrectionPipeline(raw, this.vendor);
         if (!corr.text) continue;
-        const meanConf = meanCharProbability(slice, T, C);
-        if (meanConf < minConf) continue;
+        if (confidence < minConf) continue;
         scored.push({
           bbox: batchBoxes[b]! as [number, number, number, number],
           text: corr.text,
-          confidence: meanConf,
+          confidence,
         });
       }
     }
@@ -210,39 +212,6 @@ export class MeibanOCR {
   async dispose(): Promise<void> {
     await this.session.release();
   }
-}
-
-/**
- * CTC logits の有効文字位置 (blank 以外) で softmax 最大値の平均を返す。
- * 真の系列確率ではないが推論信頼度の指標として有用。
- */
-function meanCharProbability(
-  logits: Float32Array,
-  T: number,
-  C: number,
-): number {
-  const blankIdx = CHARSET.length;
-  let totalProb = 0;
-  let nValid = 0;
-  for (let t = 0; t < T; t++) {
-    const base = t * C;
-    let maxIdx = 0;
-    let maxVal = logits[base]!;
-    for (let c = 1; c < C; c++) {
-      const v = logits[base + c]!;
-      if (v > maxVal) {
-        maxVal = v;
-        maxIdx = c;
-      }
-    }
-    if (maxIdx === blankIdx) continue;
-    let sumExp = 0;
-    for (let c = 0; c < C; c++) sumExp += Math.exp(logits[base + c]! - maxVal);
-    const prob = 1 / sumExp;
-    totalProb += prob;
-    nValid++;
-  }
-  return nValid > 0 ? totalProb / nValid : 0;
 }
 
 function round(x: number, decimals: number): number {

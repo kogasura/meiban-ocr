@@ -111,6 +111,82 @@ def test_decode_consistency_with_with_conf() -> None:
     assert text_only == text_with_conf
 
 
+# ----- New confidence aggregation (min(geomean, min)) -----
+
+def test_confidence_one_weak_position_dominates() -> None:
+    """1 位置だけ確率が低い → min(geomean, min) で全体が低くなる (∅ 位置含む集約)。"""
+    tok = FixedLengthTokenizer()
+    target_text = "E300MM000001"
+    target_ids = tok.encode(target_text)
+    # 11 位置は強い (≥ 0.99)、1 位置 (pos 11) だけ弱い (~0.30)
+    logits = torch.full((1, FIXED_LENGTH, NUM_CLASSES_12H), -10.0)
+    for t, idx in enumerate(target_ids):
+        logits[0, t, idx] = 10.0
+    # pos 11 を低 confidence に: top1=0.30, 残りに分散
+    logits[0, 11, :] = 0.0
+    logits[0, 11, target_ids[11]] = 1.0  # top1 がギリギリ
+    text, conf = tok.decode_with_conf(logits)[0]
+    assert text == target_text
+    # 11 位置の top1 prob は softmax(1.0 vs 12 個の 0) ≈ 0.20
+    # 旧 (arithmetic mean): ~0.93 で通過
+    # 新 (min over all): 0.20 程度 で 弱い
+    assert conf < 0.5, f"weak position should dominate, got {conf}"
+
+
+def test_confidence_uniform_mediocre_logits_give_uniform_conf() -> None:
+    """全位置で同じ中程度の logit → geomean ≈ min ≈ 同じ値 (= 一様な不確かさを反映)。"""
+    tok = FixedLengthTokenizer()
+    # softmax(2.5) / (softmax(2.5) + 12 * softmax(0)) ≈ 0.50
+    logits = torch.full((1, FIXED_LENGTH, NUM_CLASSES_12H), 0.0)
+    target_ids = tok.encode("E300MM000001")
+    for t, idx in enumerate(target_ids):
+        logits[0, t, idx] = 2.5
+    text, conf = tok.decode_with_conf(logits)[0]
+    assert text == "E300MM000001"
+    # 一様 → geomean=min=同じ値、確信度は中程度
+    assert 0.4 < conf < 0.6, f"expected ~0.50, got {conf}"
+
+
+def test_confidence_uniform_strong_gives_high() -> None:
+    """全位置で強い top1 → geomean ≈ min ≈ 1.0、合算で高 conf。"""
+    tok = FixedLengthTokenizer()
+    target_ids = tok.encode("E300MM000001")
+    logits = torch.full((1, FIXED_LENGTH, NUM_CLASSES_12H), -10.0)
+    for t, idx in enumerate(target_ids):
+        logits[0, t, idx] = 10.0  # ほぼ 1.0
+    _, conf = tok.decode_with_conf(logits)[0]
+    assert conf > 0.99, f"all-strong should give ~1.0, got {conf}"
+
+
+def test_confidence_all_empty_with_low_certainty() -> None:
+    """全位置 ∅ 出力だが ∅ 確率も低い (混乱状態) → 低 conf。"""
+    tok = FixedLengthTokenizer()
+    # softmax がほぼ均等な uncertainty 状態 → top1 (= ∅ かも、確率 ~1/13)
+    logits = torch.zeros((1, FIXED_LENGTH, NUM_CLASSES_12H))
+    logits[0, :, EMPTY_IDX] = 0.1  # ギリギリ ∅ が最大
+    text, conf = tok.decode_with_conf(logits)[0]
+    assert text == ""
+    # top1 prob ≈ softmax([0..0, 0.1]) for the ∅ index ≈ 0.083
+    # → conf も 0.08 程度 (低)
+    assert conf < 0.2, f"uncertain ∅ should give low conf, got {conf}"
+
+
+def test_decode_detailed_returns_per_position() -> None:
+    """decode_detailed が全位置の prob/margin を返す。"""
+    tok = FixedLengthTokenizer()
+    logits = torch.zeros((1, FIXED_LENGTH, NUM_CLASSES_12H))
+    target_ids = tok.encode("E300MM000001")
+    for t, idx in enumerate(target_ids):
+        logits[0, t, idx] = 5.0
+    result = tok.decode_detailed(logits)[0]
+    assert result["text"] == "E300MM000001"
+    assert "geomean" in result and "min_top1" in result and "min_margin" in result
+    assert len(result["per_position"]) == FIXED_LENGTH
+    for pos in result["per_position"]:
+        assert "char" in pos and "top1" in pos and "margin" in pos
+        assert pos["top1"] >= pos["top2"]
+
+
 # ----- Model -----
 
 def test_fixed_head_model_forward_shape() -> None:
