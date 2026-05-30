@@ -13,7 +13,10 @@ NUM_CLASSES: int = 37
 CHARSET_12H: str = "0123456789EM"  # 12 chars, indices 0..11
 EMPTY_IDX: int = 12  # ∅ class (no character at this position)
 NUM_CLASSES_12H: int = 13
-FIXED_LENGTH: int = 12  # Ericsson serial length
+# FIXED_LENGTH: 出力位置数。Ericsson serial は 12 文字だが、ONNX export 制約で
+# backbone 出力 W=32 を割り切れる値が必要 (AdaptiveAvgPool2d の制限)。
+# 32 を割り切る ≥12 の最小値 = 16 を採用。残り 4 位置は常に ∅ でパディングする。
+FIXED_LENGTH: int = 16
 
 # 入力サイズ (CRNN)
 INPUT_HEIGHT: int = 32

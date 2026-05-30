@@ -23,14 +23,17 @@ def test_charset_12h_is_expected() -> None:
     assert CHARSET_12H == "0123456789EM"
     assert EMPTY_IDX == 12
     assert NUM_CLASSES_12H == 13
-    assert FIXED_LENGTH == 12
+    # FIXED_LENGTH=16 (ONNX export 制約のため 12 → 16 に拡張)
+    assert FIXED_LENGTH == 16
 
 
 def test_encode_ericsson_serial() -> None:
     tok = FixedLengthTokenizer()
     ids = tok.encode("E300MM000001")
-    # E=10, 3=3, 0=0, 0=0, M=11, M=11, 0=0, 0=0, 0=0, 0=0, 0=0, 1=1
-    assert ids == [10, 3, 0, 0, 11, 11, 0, 0, 0, 0, 0, 1]
+    # E=10, 3=3, 0=0, 0=0, M=11, M=11, 0=0, 0=0, 0=0, 0=0, 0=0, 1=1 (12 chars)
+    # + 残り (FIXED_LENGTH - 12) = 4 位置を EMPTY_IDX で padding
+    expected = [10, 3, 0, 0, 11, 11, 0, 0, 0, 0, 0, 1] + [EMPTY_IDX] * (FIXED_LENGTH - 12)
+    assert ids == expected
     assert len(ids) == FIXED_LENGTH
 
 
@@ -51,8 +54,9 @@ def test_encode_short_string_pads_with_empty() -> None:
 
 def test_encode_rejects_too_long() -> None:
     tok = FixedLengthTokenizer()
+    # FIXED_LENGTH=16 を超える 17 文字を入れる
     with pytest.raises(ValueError, match="exceeds fixed_length"):
-        tok.encode("E300MM00000001")  # 14 文字
+        tok.encode("E" * (FIXED_LENGTH + 1))
 
 
 def test_encode_rejects_unknown_char() -> None:
@@ -94,11 +98,16 @@ def test_decode_full_serial() -> None:
 def test_decode_partial_with_empties() -> None:
     """途中に ∅ を含む → ∅ をスキップして残りを連結。"""
     tok = FixedLengthTokenizer()
-    target_ids = [10, 3, 0, 0, EMPTY_IDX, EMPTY_IDX, 0, 0, 0, 0, 0, 1]
+    # 12 chars + (FIXED_LENGTH - 12) ∅ padding。途中 (pos 4, 5) にも ∅ を入れる。
+    target_ids = (
+        [10, 3, 0, 0, EMPTY_IDX, EMPTY_IDX, 0, 0, 0, 0, 0, 1]
+        + [EMPTY_IDX] * (FIXED_LENGTH - 12)
+    )
     logits = torch.full((1, FIXED_LENGTH, NUM_CLASSES_12H), -10.0)
     for t, idx in enumerate(target_ids):
         logits[0, t, idx] = 10.0
     text, _ = tok.decode_with_conf(logits)[0]
+    # ∅ を除いた連結: E300 + 000001 = E300000001 (途中 ∅ 2 個 + 末尾 ∅ 4 個分が消える)
     assert text == "E300000001"
 
 

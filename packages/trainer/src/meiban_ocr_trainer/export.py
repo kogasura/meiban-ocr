@@ -26,19 +26,36 @@ from pathlib import Path
 import torch
 
 from meiban_ocr_trainer.constants import INPUT_HEIGHT, INPUT_WIDTH
-from meiban_ocr_trainer.models import TinyOCRModel
+from meiban_ocr_trainer.models import FixedHeadOCR, TinyOCRModel
 from meiban_ocr_trainer.tokenizer import CTCTokenizer
 
 
-def _build_model_from_ckpt(ckpt: dict, device: torch.device) -> TinyOCRModel:
+def _build_model_from_ckpt(ckpt: dict, device: torch.device):
+    """Checkpoint の model_type に応じて TinyOCRModel か FixedHeadOCR を返す。
+
+    Phase 2c+: 12-head model (`model_type='fixed_head'`) を判別し、適切なクラスを構築。
+    旧 CRNN+CTC checkpoint (model_type 欠落) は TinyOCRModel として扱う (後方互換)。
+    """
+    model_type = ckpt.get("model_type", "ctc")
     cfg = ckpt.get("config", {}).get("model", {})
-    model = TinyOCRModel(
-        num_classes=int(cfg.get("num_classes", 37)),
-        rnn_hidden=int(cfg.get("rnn_hidden", 128)),
-        rnn_layers=int(cfg.get("rnn_layers", 2)),
-        dropout=float(cfg.get("dropout", 0.1)),
-        pretrained=False,  # weights は ckpt から復元するので不要
-    ).to(device).eval()
+
+    if model_type == "fixed_head":
+        model = FixedHeadOCR(
+            use_rnn=ckpt.get("use_rnn", False),
+            rnn_hidden=int(cfg.get("rnn_hidden", 64)),
+            dropout=float(cfg.get("dropout", 0.1)),
+            pretrained=False,
+        ).to(device).eval()
+    else:
+        # 旧 CRNN+CTC (TinyOCRModel)
+        model = TinyOCRModel(
+            num_classes=int(cfg.get("num_classes", 37)),
+            rnn_hidden=int(cfg.get("rnn_hidden", 128)),
+            rnn_layers=int(cfg.get("rnn_layers", 2)),
+            dropout=float(cfg.get("dropout", 0.1)),
+            pretrained=False,
+        ).to(device).eval()
+
     model.load_state_dict(ckpt["model_state"])
     return model
 
@@ -119,8 +136,14 @@ def evaluate_onnx_cer(
     data_root: Path,
     split: str = "val",
     batch_size: int = 32,
+    model_type: str = "ctc",
 ) -> dict[str, float]:
-    """ONNX モデルを Python onnxruntime で読み込み、指定 split で CER/EM を計算。"""
+    """ONNX モデルを Python onnxruntime で読み込み、指定 split で CER/EM を計算。
+
+    model_type:
+      'ctc'        → CTC greedy decode (TinyOCRModel)
+      'fixed_head' → fixed-length argmax decode (FixedHeadOCR)
+    """
     from functools import partial
 
     import numpy as np
@@ -129,11 +152,21 @@ def evaluate_onnx_cer(
     from torchmetrics.text import CharErrorRate
 
     from meiban_ocr_trainer.data.augment import build_eval_transform
-    from meiban_ocr_trainer.data.dataset import RecognitionDataset, ctc_collate
+    from meiban_ocr_trainer.data.dataset import (
+        RecognitionDataset,
+        ctc_collate,
+        fixed_length_collate,
+    )
+    from meiban_ocr_trainer.tokenizer import FixedLengthTokenizer
 
-    tokenizer = CTCTokenizer()
-    ds = RecognitionDataset(data_root, split, tokenizer, build_eval_transform())
-    collate = partial(ctc_collate, tokenizer=tokenizer)
+    if model_type == "fixed_head":
+        tokenizer = FixedLengthTokenizer()
+        collate = partial(fixed_length_collate, tokenizer=tokenizer)
+    else:
+        tokenizer = CTCTokenizer()
+        collate = partial(ctc_collate, tokenizer=tokenizer)
+
+    ds = RecognitionDataset(data_root, split, transform=build_eval_transform())
     dl = DataLoader(ds, batch_size=batch_size, shuffle=False, collate_fn=collate)
 
     sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
@@ -143,9 +176,12 @@ def evaluate_onnx_cer(
     gts_all: list[str] = []
     for batch in dl:
         x = batch["images"].numpy().astype(np.float32)
-        (logits,) = sess.run(None, {input_name: x})  # (B, T, C)
+        (logits,) = sess.run(None, {input_name: x})
         logits_t = torch.from_numpy(logits)
-        preds = tokenizer.greedy_decode(logits_t)
+        if model_type == "fixed_head":
+            preds = tokenizer.decode(logits_t)
+        else:
+            preds = tokenizer.greedy_decode(logits_t)
         preds_all.extend(preds)
         gts_all.extend(batch["texts"])
 
@@ -214,8 +250,12 @@ def main(argv: list[str] | None = None) -> int:
     # Why weights_only=True: pickle 経由の任意コード実行を防ぐ。
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
     model = _build_model_from_ckpt(ckpt, device)
-    print(f"  ckpt epoch={ckpt.get('epoch')}, val_CER={ckpt.get('val_cer')}",
-          file=sys.stderr)
+    model_type = ckpt.get("model_type", "ctc")
+    print(
+        f"  ckpt epoch={ckpt.get('epoch')}, val_CER={ckpt.get('val_cer')}, "
+        f"model_type={model_type}",
+        file=sys.stderr,
+    )
 
     export_onnx(model, fp32_path, opset=args.opset)
     simplify_onnx(fp32_path, simplified_path)
@@ -228,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     report: dict = {
         "name": args.name,
         "checkpoint": str(args.checkpoint),
+        "model_type": model_type,
         "opset": args.opset,
         "quantized": not args.no_quantize,
         "quantization": "fp16" if not args.no_quantize else None,
@@ -248,16 +289,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.validate_data is not None:
         print(f"[export] evaluating fp32 simplified on '{args.validate_split}'...",
               file=sys.stderr)
-        fp32_metrics = evaluate_onnx_cer(simplified_path, args.validate_data,
-                                         args.validate_split)
+        fp32_metrics = evaluate_onnx_cer(
+            simplified_path, args.validate_data, args.validate_split,
+            model_type=model_type,
+        )
         report["fp32_metrics"] = fp32_metrics
         print(f"  fp32: CER={fp32_metrics['cer']:.4f}  EM={fp32_metrics['em']:.3f}",
               file=sys.stderr)
         if not args.no_quantize:
             print(f"[export] evaluating fp16 on '{args.validate_split}'...",
                   file=sys.stderr)
-            fp16_metrics = evaluate_onnx_cer(fp16_path, args.validate_data,
-                                             args.validate_split)
+            fp16_metrics = evaluate_onnx_cer(
+                fp16_path, args.validate_data, args.validate_split,
+                model_type=model_type,
+            )
             report["fp16_metrics"] = fp16_metrics
             print(f"  fp16: CER={fp16_metrics['cer']:.4f}  EM={fp16_metrics['em']:.3f}",
                   file=sys.stderr)

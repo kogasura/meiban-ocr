@@ -68,8 +68,10 @@ class FixedHeadOCR(nn.Module):
         self.use_rnn = use_rnn
 
         self.backbone, backbone_out = _build_backbone(pretrained=pretrained)
-        # 横方向の解像度を 32 → num_positions=12 に縮約
-        # AdaptiveAvgPool は forward で動的な ONNX export と相性が良い (固定 num_positions)
+        # 横方向の解像度を 32 → num_positions=16 に縮約 (32/16=2 で割り切れる)。
+        # Why 16: ONNX export では AdaptiveAvgPool2d の出力サイズが入力サイズの
+        # 約数である必要があり、Ericsson 文字数 12 では割り切れない (32/12 ≈ 2.67)。
+        # 16 にすることで割り切れて export OK、Ericsson 12 文字は末尾 4 位置を ∅ で padding。
         self.pool = nn.AdaptiveAvgPool2d((1, num_positions))
 
         if use_rnn:
@@ -94,14 +96,14 @@ class FixedHeadOCR(nn.Module):
         # 1ch グレースケール → 3ch にレプリケーション (MobileNetV3 が要求)
         if x.shape[1] == 1:
             x = x.expand(-1, 3, -1, -1)
-        feat = self.backbone(x)              # (B, 96, 1, 32)
-        feat = self.pool(feat)               # (B, 96, 1, num_positions)
-        feat = feat.squeeze(2)               # (B, 96, num_positions)
-        feat = feat.permute(0, 2, 1)         # (B, num_positions, 96)
+        feat = self.backbone(x)                  # (B, 96, 1, 32)
+        feat = self.pool(feat)                   # (B, 96, 1, num_positions)
+        feat = feat.squeeze(2)                   # (B, 96, num_positions)
+        feat = feat.permute(0, 2, 1)             # (B, num_positions, 96)
         if self.rnn is not None:
-            feat, _ = self.rnn(feat)         # (B, num_positions, 2 * rnn_hidden)
+            feat, _ = self.rnn(feat)             # (B, num_positions, 2H)
         feat = self.dropout(feat)
-        return self.classifier(feat)         # (B, num_positions, num_classes)
+        return self.classifier(feat)             # (B, num_positions, num_classes)
 
 
 __all__ = ["FixedHeadOCR"]
