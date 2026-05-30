@@ -12,9 +12,14 @@
 
 import * as ort from 'onnxruntime-web';
 
-import { NUM_CLASSES } from './constants';
-import { applyCorrectionPipeline, ctcGreedyDecodeWithConfidence } from './decoder';
+import { FIXED_LENGTH, NUM_CLASSES, NUM_CLASSES_12H } from './constants';
+import {
+  applyCorrectionPipeline,
+  ctcGreedyDecodeWithConfidence,
+  fixedHeadDecodeWithConfidence,
+} from './decoder';
 import { nmsByText, type ScoredDetection } from './detectors/nms';
+import { prefilterBboxes, type PrefilterOptions } from './detectors/prefilter';
 import {
   createSlidingWindowDetector,
   type SlidingWindowOptions,
@@ -47,6 +52,14 @@ export interface MeibanOCROptions {
   detector?: DetectorFn | SlidingWindowOptions;
   /** 1 バッチ最大件数。デフォルト 64。WebGPU の VRAM 制約対策。 */
   maxBatchSize?: number;
+  /**
+   * 古典 CV pre-filter (Phase 2a)。エッジ密度 + 局所分散で背景窓を除外、
+   * sliding-window の総当たり数を半減して速度改善 + hallucination 削減。
+   * - `true` or option: 有効化 (default)
+   * - `false`: 無効化 (検出器の bbox をそのまま使う、互換挙動)
+   * default 閾値: edgeThreshold=30, varThreshold=100 (Python 実証値)
+   */
+  prefilter?: boolean | PrefilterOptions;
 }
 
 export interface OCRResult {
@@ -161,7 +174,16 @@ export class MeibanOCR {
     const imageData = imageInputToImageData(image);
     const bboxesRaw = await this.detector(imageData);
     if (bboxesRaw.length === 0) return [];
-    const bboxes: BBox[] = bboxesRaw;
+
+    // 古典 CV pre-filter (default ON)。エッジ密度 + 局所分散で背景窓を除外。
+    // Phase 2a 実証: pos recall 100% 維持 + 窓数 ~半減 + 推論時間 ~半減。
+    let bboxes: BBox[] = bboxesRaw;
+    const pf = this.options.prefilter;
+    if (pf !== false) {
+      const pfOpts: PrefilterOptions = (pf && typeof pf === 'object') ? pf : {};
+      bboxes = prefilterBboxes(imageData, bboxes, pfOpts);
+      if (bboxes.length === 0) return [];
+    }
 
     const maxBatch = this.options.maxBatchSize ?? 64;
     const minConf = this.options.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
@@ -178,16 +200,33 @@ export class MeibanOCR {
       const out = await this.session.run(feeds);
       const logits = out[outputName]!;
       const [B, T, C] = logits.dims as [number, number, number];
-      if (C !== NUM_CLASSES) {
-        throw new Error(`unexpected logits C=${C}, expected ${NUM_CLASSES}`);
+
+      // Model type auto-detect:
+      //   C=37 (CTC, CHARSET 36 + blank)         → ctcGreedyDecodeWithConfidence
+      //   C=13 (fixed-head, CHARSET_12H 12 + ∅)  → fixedHeadDecodeWithConfidence
+      // 旧 v0.3.x の ONNX も同じ runtime で動く後方互換性を保つ。
+      let decode:
+        | typeof ctcGreedyDecodeWithConfidence
+        | typeof fixedHeadDecodeWithConfidence;
+      if (C === NUM_CLASSES) {
+        decode = ctcGreedyDecodeWithConfidence;
+      } else if (C === NUM_CLASSES_12H) {
+        if (T !== FIXED_LENGTH) {
+          throw new Error(
+            `fixed-head model expects T=${FIXED_LENGTH}, got T=${T}`,
+          );
+        }
+        decode = fixedHeadDecodeWithConfidence;
+      } else {
+        throw new Error(
+          `unexpected logits C=${C}, expected ${NUM_CLASSES} (CTC) or ${NUM_CLASSES_12H} (fixed-head)`,
+        );
       }
+
       const flatLogits = logits.data as Float32Array;
       for (let b = 0; b < B; b++) {
         const slice = flatLogits.subarray(b * T * C, (b + 1) * T * C);
-        // decode と confidence 集約を 1 pass で。
-        // confidence = min(geomean(top1), min(top1)) on non-blank timesteps.
-        // 旧 mean (= 弱位置希釈) を置き換え、false-accept 最小化方針と整合させる。
-        const { text: raw, confidence } = ctcGreedyDecodeWithConfidence(slice, T, C);
+        const { text: raw, confidence } = decode(slice, T, C);
         const corr = applyCorrectionPipeline(raw, this.vendor);
         if (!corr.text) continue;
         if (confidence < minConf) continue;

@@ -13,7 +13,14 @@
  *   を採用することで、false-accept 最小化方針 (SECURITY.md) と整合
  */
 
-import { BLANK_IDX, CHARSET } from './constants';
+import {
+  BLANK_IDX,
+  CHARSET,
+  CHARSET_12H,
+  EMPTY_IDX,
+  FIXED_LENGTH,
+  NUM_CLASSES_12H,
+} from './constants';
 import type { VendorPattern } from './vendors';
 
 /**
@@ -164,6 +171,65 @@ export function ctcGreedyDecodeWithConfidence(
     top2Probs.push(p2);
   }
   const text = out.join('');
+  const agg = aggregateConfidence(top1Probs, top2Probs);
+  return { text, ...agg };
+}
+
+/**
+ * 12-head fixed-length decode + confidence 集約。
+ *
+ * 各位置 (FIXED_LENGTH=16) で argmax してテキストを構築 (∅ は skip)。
+ * confidence は全 16 位置の top1 prob から `min(geomean, min)` で算出
+ * (∅ 位置も含める: 構造異常検出のため)。
+ *
+ * @param logits  (L, C) のフラット配列 (row-major). L=FIXED_LENGTH, C=NUM_CLASSES_12H
+ * @param numPositions  L (= FIXED_LENGTH = 16)
+ * @param numClasses    C (= NUM_CLASSES_12H = 13)
+ */
+export function fixedHeadDecodeWithConfidence(
+  logits: ArrayLike<number>,
+  numPositions: number = FIXED_LENGTH,
+  numClasses: number = NUM_CLASSES_12H,
+): { text: string } & ConfidenceResult {
+  if (logits.length !== numPositions * numClasses) {
+    throw new Error(
+      `logits length mismatch: expected ${numPositions * numClasses}, got ${logits.length}`,
+    );
+  }
+  const chars: string[] = [];
+  const top1Probs: number[] = [];
+  const top2Probs: number[] = [];
+  for (let t = 0; t < numPositions; t++) {
+    const base = t * numClasses;
+    // find top 2
+    let bestIdx = 0;
+    let bestVal = -Infinity;
+    let secondVal = -Infinity;
+    for (let c = 0; c < numClasses; c++) {
+      const v = logits[base + c]!;
+      if (v > bestVal) {
+        secondVal = bestVal;
+        bestVal = v;
+        bestIdx = c;
+      } else if (v > secondVal) {
+        secondVal = v;
+      }
+    }
+    // ∅ 以外の位置だけテキストに追加 (∅ = no character at this position)
+    if (bestIdx !== EMPTY_IDX) {
+      chars.push(CHARSET_12H[bestIdx]!);
+    }
+    // softmax の数値安定化 (bestVal を引いて exp の overflow を防ぐ)
+    let sumExp = 0;
+    for (let c = 0; c < numClasses; c++) {
+      sumExp += Math.exp(logits[base + c]! - bestVal);
+    }
+    const p1 = 1 / sumExp;
+    const p2 = Math.exp(secondVal - bestVal) / sumExp;
+    top1Probs.push(p1);
+    top2Probs.push(p2);
+  }
+  const text = chars.join('');
   const agg = aggregateConfidence(top1Probs, top2Probs);
   return { text, ...agg };
 }

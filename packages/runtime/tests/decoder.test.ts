@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { BLANK_IDX, CHARSET, NUM_CLASSES } from '../src/constants';
+import {
+  BLANK_IDX,
+  CHARSET,
+  CHARSET_12H,
+  EMPTY_IDX,
+  FIXED_LENGTH,
+  NUM_CLASSES,
+  NUM_CLASSES_12H,
+} from '../src/constants';
 import {
   aggregateConfidence,
   applyCorrectionPipeline,
   ctcGreedyDecode,
   ctcGreedyDecodeWithConfidence,
+  fixedHeadDecodeWithConfidence,
   preprocessText,
 } from '../src/decoder';
 import { ericsson } from '../src/vendors';
@@ -199,5 +208,74 @@ describe('ctcGreedyDecodeWithConfidence', () => {
   it('throws on length mismatch', () => {
     const tiny = new Float32Array(10);
     expect(() => ctcGreedyDecodeWithConfidence(tiny, 2, NUM_CLASSES)).toThrow();
+  });
+});
+
+// ===== Fixed-head decoder (12-head + ∅, FIXED_LENGTH=16) =====
+
+function buildFixedHeadLogits(positionTargets: number[]): Float32Array {
+  // positionTargets.length は FIXED_LENGTH まで。残り位置は ∅ で埋める。
+  if (positionTargets.length > FIXED_LENGTH) {
+    throw new Error('too many positions');
+  }
+  const out = new Float32Array(FIXED_LENGTH * NUM_CLASSES_12H);
+  // すべて -10 で初期化、各位置の target クラスのみ +10
+  for (let i = 0; i < out.length; i++) out[i] = -10;
+  for (let t = 0; t < FIXED_LENGTH; t++) {
+    const cls = t < positionTargets.length ? positionTargets[t]! : EMPTY_IDX;
+    out[t * NUM_CLASSES_12H + cls] = 10;
+  }
+  return out;
+}
+
+describe('fixedHeadDecodeWithConfidence', () => {
+  it('decodes Ericsson serial (12 chars + 4 ∅ padding)', () => {
+    // E=10, 3=3, 0=0, 0=0, M=11, M=11, 0=0, 0=0, 0=0, 0=0, 0=0, 1=1
+    const E = CHARSET_12H.indexOf('E');
+    const M = CHARSET_12H.indexOf('M');
+    const targets = [E, 3, 0, 0, M, M, 0, 0, 0, 0, 0, 1];
+    const result = fixedHeadDecodeWithConfidence(buildFixedHeadLogits(targets));
+    expect(result.text).toBe('E300MM000001');
+    expect(result.confidence).toBeGreaterThan(0.99);
+    expect(result.minTop1).toBeGreaterThan(0.99);
+  });
+
+  it('returns empty string when all positions are ∅', () => {
+    const result = fixedHeadDecodeWithConfidence(buildFixedHeadLogits([]));
+    expect(result.text).toBe('');
+    // 全 ∅ + 強い logits → 高 confidence (= 確信を持って reject)
+    expect(result.confidence).toBeGreaterThan(0.99);
+  });
+
+  it('one weak position drags confidence down', () => {
+    const E = CHARSET_12H.indexOf('E');
+    const M = CHARSET_12H.indexOf('M');
+    const targets = [E, 3, 0, 0, M, M, 0, 0, 0, 0, 0, 1];
+    const logits = buildFixedHeadLogits(targets);
+    // 位置 11 (1) を弱くする: 1 と 0 がほぼ同点
+    logits[11 * NUM_CLASSES_12H + 1] = 1.0;
+    logits[11 * NUM_CLASSES_12H + 0] = 0.95;
+    const result = fixedHeadDecodeWithConfidence(logits);
+    expect(result.text).toBe('E300MM000001');
+    // 1 位置だけ弱い → min が支配 → confidence 下がる
+    expect(result.minTop1).toBeLessThan(0.6);
+    expect(result.confidence).toBeLessThan(0.6);
+  });
+
+  it('skips ∅ in middle, concatenates rest', () => {
+    // 'E300MM' 後に途中の 0 を ∅ にしてみる
+    const E = CHARSET_12H.indexOf('E');
+    const M = CHARSET_12H.indexOf('M');
+    const targets = [E, 3, 0, 0, M, M, EMPTY_IDX, EMPTY_IDX, 0, 0, 0, 1];
+    const result = fixedHeadDecodeWithConfidence(buildFixedHeadLogits(targets));
+    // 12 文字中 2 位置が ∅ → 残り 10 字を連結 (FIXED_LENGTH=16 の末尾 4 ∅ も skip)
+    expect(result.text).toBe('E300MM0001');
+  });
+
+  it('throws on length mismatch', () => {
+    const tiny = new Float32Array(10);
+    expect(() =>
+      fixedHeadDecodeWithConfidence(tiny, FIXED_LENGTH, NUM_CLASSES_12H),
+    ).toThrow();
   });
 });
