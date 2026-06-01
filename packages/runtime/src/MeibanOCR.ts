@@ -25,7 +25,12 @@ import {
   type SlidingWindowOptions,
 } from './detectors/sliding-window';
 import type { BBox, DetectorFn } from './detectors/types';
-import { cropAndNormalizeBatch, imageInputToImageData, type ImageInput } from './preprocess';
+import {
+  cropAndNormalizeBatch,
+  imageInputToImageData,
+  type ImageInput,
+  type RecenterOptions,
+} from './preprocess';
 import { ericsson, VENDOR_PATTERNS, type VendorPattern } from './vendors';
 
 export interface MeibanOCROptions {
@@ -60,6 +65,15 @@ export interface MeibanOCROptions {
    * default 閾値: edgeThreshold=30, varThreshold=100 (Python 実証値)
    */
   prefilter?: boolean | PrefilterOptions;
+  /**
+   * Window 再センタリング (Phase 2b, 2026-06-01)。
+   * sliding-window 窓内で text が横にズレているとき、 column activity の重心で
+   * bbox を水平シフトしてから crop。fixed-head OCR の位置固定契約を保つために必要。
+   * - `true` or option: 有効化 (default)
+   * - `false`: 無効化 (旧挙動、ズレた窓をそのまま渡す)
+   * default: expandRatio=0.3, minActivity=5, maxShiftRatio=0.4
+   */
+  recenter?: boolean | RecenterOptions;
 }
 
 export interface OCRResult {
@@ -190,9 +204,17 @@ export class MeibanOCR {
 
     const scored: ScoredDetection[] = [];
 
+    // recenter: undefined → cropAndNormalize 側の default (true) に委譲。
+    // 値が指定されていれば (false / true / RecenterOptions) そのまま下流に渡す。
+    // CTC モデル (C === NUM_CLASSES) でも recenter は害が小さい (text を中央寄せするだけ)。
+    // 必要なら呼び出し側で `recenter: false` で明示 OFF にできる。
+    const rc = this.options.recenter;
+    const cropOpts: { recenter?: boolean | RecenterOptions } =
+      rc === undefined ? {} : { recenter: rc };
+
     for (let i = 0; i < bboxes.length; i += maxBatch) {
       const batchBoxes = bboxes.slice(i, i + maxBatch);
-      const flat = cropAndNormalizeBatch(imageData, batchBoxes);
+      const flat = cropAndNormalizeBatch(imageData, batchBoxes, cropOpts);
       const inputTensor = new ort.Tensor('float32', flat, [batchBoxes.length, 1, 32, 128]);
       const inputName = this.session.inputNames[0]!;
       const outputName = this.session.outputNames[0]!;

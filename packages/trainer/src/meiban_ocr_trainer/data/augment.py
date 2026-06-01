@@ -8,12 +8,18 @@
 
 Version history:
 - v1 (2026-05-27 初版): val_CER 3.85%、val_EM 53.8% を達成 (38 real + 1900 replaced で訓練)
-- v2 (2026-05-27、ボツ): blur/noise/Elastic を厚くしたが、1938サンプル規模では under-fit。
-  train_loss が 0.62 で頭打ち、val_CER も 0.0641 に悪化。v2 コードは
-  `augment_v2_too_aggressive.py` に保存。データ量を増やしてから再挑戦の予定。
+- v2 (2026-05-27、ボツ): blur/noise/Elastic を厚くしたが、1938 サンプル規模では under-fit。
+  → `augment_v2_too_aggressive.py` に保存
+- v3 (2026-06-01、ボツ): translate ±15% + scale 0.75-1.25 で fixed-head 認識器を破壊
+  (isolated EM 48.1% → 1.9%)。fixed-head は位置固定アーキで、translate と構造的に
+  両立不可。→ `augment_v3_position_breaking.py` に保存
+- **v1 復帰 (2026-06-01)**: 窓ズレ吸収は augment ではなく runtime 側の window 再センタリング
+  (preprocess.ts:recenterBbox) で解決する方針に変更。本ファイルは v1 spec に戻す
 
-Why this is v1 (緩め): 訓練データが限定的 (38 real + 1900 synthetic) のため、強い
-augmentation は under-fit を引き起こす。データ量に対し augment 強度のバランスが重要。
+Why v1 specs are conservative:
+1. 訓練データが限定的 (38 real + 1900 synthetic) → 強い augment は under-fit
+2. fixed-head は「位置 p = p 番目の文字」契約に依存 → translate は契約破壊
+3. reject 優先方針 → 認識器は GT crop で確実に読めることを最優先
 """
 
 from __future__ import annotations
@@ -31,25 +37,20 @@ from meiban_ocr_trainer.constants import (
 
 
 def build_train_transform() -> A.Compose:
-    """v3 augmentation: 窓ズレ耐性を組み込む (Phase 2c+ fix)。
+    """v1 augmentation (2026-06-01 v3 から復帰)。
 
-    v1 → v3 で **translate と scale 範囲を拡大**:
-    sliding-window 窓は GT text_bbox と IoU 0.47 程度しか重ならない (構造的天井)。
-    クロップ内で text が中央からズレている、または scale が違う窓を訓練で経験させないと、
-    isolated test で 48% EM 出る認識器でも E2E recall 0% に落ちる。
-
-    v2 (boセ) は augment_v2_too_aggressive.py に保存済 (blur/noise 強化が under-fit を招いた)。
-    v3 は **translate/scale だけ強化**して認識本体への影響は控えめ。
+    - 幾何変形は控えめ: 回転 ±2°、scale 0.92-1.08、translate なし
+      → fixed-head の位置固定契約を保つ
+    - 質感劣化系は厚め: 撮影品質のバリエーション (圧縮・ノイズ・ブラー) を学習
     """
     return A.Compose([
-        # 幾何: 窓ズレ耐性を強化 (translate ±15%、scale 0.75-1.25)
+        # 幾何: 控えめ (translate なし、scale 微小、 fixed-head の位置契約を守る)
         A.Affine(
-            rotate=(-3, 3),
-            scale=(0.75, 1.25),                 # 窓内 text サイズの揺らぎを学習
-            translate_percent=(-0.15, 0.15),    # 窓中心からのズレを学習
+            rotate=(-2, 2),
+            scale=(0.92, 1.08),
             shear=(-2, 2),
-            p=0.7,                              # ほぼ毎回適用
-            mode=0,                             # cv2.BORDER_CONSTANT (= 0 padding)
+            p=0.4,
+            mode=0,  # cv2.BORDER_CONSTANT (= 0 padding)
         ),
         A.Perspective(scale=(0.01, 0.05), p=0.3),
 
