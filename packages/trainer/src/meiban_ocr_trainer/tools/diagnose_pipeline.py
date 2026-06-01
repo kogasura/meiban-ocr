@@ -40,9 +40,14 @@ import numpy as np
 import onnxruntime as ort
 import torch
 
-from meiban_ocr_trainer.constants import INPUT_HEIGHT, INPUT_WIDTH
+from meiban_ocr_trainer.constants import (
+    INPUT_HEIGHT,
+    INPUT_WIDTH,
+    NUM_CLASSES,
+    NUM_CLASSES_12H,
+)
 from meiban_ocr_trainer.data.annotation import load_annotation
-from meiban_ocr_trainer.tokenizer import CTCTokenizer
+from meiban_ocr_trainer.tokenizer import CTCTokenizer, FixedLengthTokenizer
 from meiban_ocr_trainer.vendors import ERICSSON
 
 # ===== sliding-window (mirror of packages/runtime/src/detectors/sliding-window.ts) =====
@@ -230,6 +235,99 @@ def containment_ratio(window: list[int], target: list[int]) -> float:
     return inter / target_area if target_area > 0 else 0.0
 
 
+def _detect_model_type_and_tokenizer(session: ort.InferenceSession):
+    """ONNX session の output shape から model type を判別し、対応 tokenizer を返す。
+
+    Returns:
+        ("ctc" | "fixed_head", tokenizer)
+    """
+    # 出力の last dim で判別: 37 → CTC、13 → fixed_head
+    outputs = session.get_outputs()
+    if not outputs:
+        raise RuntimeError("ONNX session has no outputs")
+    shape = outputs[0].shape  # [batch, T, C] or similar
+    last_dim = shape[-1]
+    if last_dim == NUM_CLASSES:
+        return "ctc", CTCTokenizer()
+    if last_dim == NUM_CLASSES_12H:
+        return "fixed_head", FixedLengthTokenizer()
+    raise RuntimeError(
+        f"unknown model output last dim {last_dim}, expected {NUM_CLASSES} or {NUM_CLASSES_12H}"
+    )
+
+
+def _decode_logits(model_type: str, tokenizer, logits_np: np.ndarray) -> list[tuple[str, float]]:
+    """model_type に応じて decode + confidence aggregation。
+
+    Returns list of (pred_text, confidence) for each batch sample.
+    """
+    logits_t = torch.from_numpy(logits_np)
+    if model_type == "fixed_head":
+        return tokenizer.decode_with_conf(logits_t)
+    # CTC: greedy_decode_with_conf を使用
+    return tokenizer.greedy_decode_with_conf(logits_t)
+
+
+def evaluate_isolated_recognizer(
+    image_rgb: np.ndarray,
+    positives: list,  # list[Region] with text_bbox + text
+    session: ort.InferenceSession,
+    model_type: str,
+    tokenizer,
+    pattern,
+    conf_threshold: float,
+    batch_size: int = 32,
+) -> dict:
+    """ステージ分離評価: GT text_bbox から直接 crop して認識器単独を測る。
+
+    検出器の影響を完全に排除し、「認識器の天井性能」を測定する。
+    """
+    if not positives:
+        return {"n": 0}
+
+    crops = [crop_and_normalize(image_rgb, list(p.text_bbox or p.bbox))
+             for p in positives]
+    gts = [p.text for p in positives]
+
+    input_name = session.get_inputs()[0].name
+    output_name = session.get_outputs()[0].name
+
+    preds: list[str] = []
+    confs: list[float] = []
+    for i in range(0, len(crops), batch_size):
+        batch = np.stack(crops[i:i + batch_size])
+        x = batch[:, None, :, :]  # (N, 1, H, W)
+        logits_np = session.run([output_name], {input_name: x})[0]
+        for text, conf in _decode_logits(model_type, tokenizer, logits_np):
+            preds.append(text)
+            confs.append(conf)
+
+    n = len(positives)
+    pattern_ok = sum(1 for p in preds if pattern.match(p))
+    exact_match = sum(1 for p, g in zip(preds, gts) if p == g)
+    accepted_at_thr = sum(
+        1 for p, c in zip(preds, confs) if pattern.match(p) and c >= conf_threshold
+    )
+    accepted_correct = sum(
+        1 for p, g, c in zip(preds, gts, confs)
+        if pattern.match(p) and c >= conf_threshold and p == g
+    )
+    avg_conf = sum(confs) / n if n else 0.0
+
+    return {
+        "n": n,
+        "pattern_match": pattern_ok,
+        "exact_match": exact_match,
+        "accepted_at_thr": accepted_at_thr,
+        "accepted_correct": accepted_correct,
+        "avg_conf": avg_conf,
+        "samples": [
+            {"gt": g, "pred": p, "conf": c, "exact": p == g}
+            for g, p, c in zip(gts, preds, confs)
+        ],
+    }
+
+
 def evaluate_detector(
     windows: list[list[int]],
     pos_bboxes: list[list[int]],
@@ -355,9 +453,10 @@ def diagnose_image(
     ]
 
     # 4. ONNX 推論 (バッチ、pre-filter 通過のみ)
+    # model_type を output shape で auto-detect (CTC: C=37 / fixed-head: C=13)
     input_name = session.get_inputs()[0].name
     output_name = session.get_outputs()[0].name
-    tokenizer = CTCTokenizer()
+    model_type, tokenizer = _detect_model_type_and_tokenizer(session)
     pattern = ERICSSON.strict_regex
 
     preds: list[str] = [""] * len(windows)
@@ -372,9 +471,8 @@ def diagnose_image(
         t3 = time.time()
         logits_np = session.run([output_name], {input_name: x})[0]
         t_infer += time.time() - t3
-        logits_t = torch.from_numpy(logits_np)
-        for j, (text, conf) in zip(batch_idx,
-                                   tokenizer.greedy_decode_with_conf(logits_t)):
+        decoded = _decode_logits(model_type, tokenizer, logits_np)
+        for j, (text, conf) in zip(batch_idx, decoded):
             preds[j] = text
             confs[j] = conf
 
@@ -427,12 +525,20 @@ def diagnose_image(
     # 6. 検出器の本来評価 (per-GT-positive coverage + end-to-end recall)
     detector_eval = evaluate_detector(windows, pos_bboxes, pred_per_window)
 
+    # 7. ステージ分離評価 (= 認識器単独の天井性能) — GT text_bbox から直接 crop
+    positives = [r for r in ann.positives if r.claude_verified]
+    isolated = evaluate_isolated_recognizer(
+        img_rgb, positives, session, model_type, tokenizer, pattern,
+        conf_threshold=conf_threshold,
+    )
+
     return {
         "image": image_path.name,
         "image_size": [w, h],
         "n_windows": len(windows),
         "n_pos_ann": len(pos_bboxes),
         "n_neg_ann": len(neg_bboxes),
+        "model_type": model_type,
         "t_windows_sec": t_windows,
         "t_feature_maps_sec": t_feature_maps,
         "t_window_feats_sec": t_window_feats,
@@ -440,6 +546,7 @@ def diagnose_image(
         "n_passed_filter": n_passed,
         "stats": stats,
         "detector_eval": detector_eval,
+        "isolated_eval": isolated,
     }
 
 
@@ -516,6 +623,85 @@ def _format_report(result: dict, conf_threshold: float) -> str:
                 for x in s["samples"][:3]
             )
             lines.append(f"    ↳ top pattern-match preds: {samples_str}")
+
+    # ステージ分離評価: 認識器単独の天井性能
+    iso = result.get("isolated_eval", {})
+    if iso.get("n", 0):
+        n = iso["n"]
+        lines += [
+            "",
+            "  --- ステージ分離評価 (GT text_bbox から直接認識、検出器の影響を排除) ---",
+            f"  pattern_match:           {iso['pattern_match']:>3}/{n} ({100*iso['pattern_match']/n:>5.1f}%)",
+            f"  exact_match (EM):        {iso['exact_match']:>3}/{n} ({100*iso['exact_match']/n:>5.1f}%)",
+            f"  pattern + conf>={conf_threshold}:    "
+            f"{iso['accepted_at_thr']:>3}/{n} ({100*iso['accepted_at_thr']/n:>5.1f}%)",
+            f"  accepted + correct:      {iso['accepted_correct']:>3}/{n} "
+            f"({100*iso['accepted_correct']/n:>5.1f}%)",
+            f"  avg confidence:          {iso['avg_conf']:.3f}",
+        ]
+    return "\n".join(lines)
+
+
+def _format_loss_budget(results: list[dict], conf_threshold: float) -> str:
+    """全画像合算で各段階の loss budget を可視化。"""
+    total_gt = sum(r["detector_eval"]["n_positives"] for r in results)
+    if total_gt == 0:
+        return ""
+
+    # Stage 1: 検出 coverage@IoU>=0.3
+    total_cov_03 = sum(
+        int(round(r["detector_eval"]["coverage_03"] * r["detector_eval"]["n_positives"]))
+        for r in results
+    )
+    # Stage 2: GT crop で認識器単独成功 (= 認識器の天井)
+    total_iso_em = sum(r.get("isolated_eval", {}).get("exact_match", 0) for r in results)
+    total_iso_pat = sum(
+        r.get("isolated_eval", {}).get("pattern_match", 0) for r in results
+    )
+    total_iso_acc_correct = sum(
+        r.get("isolated_eval", {}).get("accepted_correct", 0) for r in results
+    )
+    # Stage 3: 検出器→認識器→gate の累積 (= E2E)
+    total_e2e = sum(
+        int(round(r["detector_eval"]["end_to_end_recall"]
+                  * r["detector_eval"]["n_positives"]))
+        for r in results
+    )
+
+    def pct(x):
+        return 100 * x / max(total_gt, 1)
+
+    lines = [
+        "",
+        "========== Stage Loss Budget (全画像合算) ==========",
+        f"  GT positives total:                          {total_gt:>3}  (100.0%)",
+        "",
+        "  ステージ 1: 検出",
+        f"    Coverage@IoU≥0.3:                          {total_cov_03:>3}  "
+        f"({pct(total_cov_03):>5.1f}%)  ← 検出損失: {pct(total_gt - total_cov_03):>4.1f}%",
+        "",
+        "  ステージ 2: 認識器単独 (= 天井性能、GT crop で測定)",
+        f"    pattern_match (GT crop):                   {total_iso_pat:>3}  "
+        f"({pct(total_iso_pat):>5.1f}%)",
+        f"    exact_match  (GT crop):                    {total_iso_em:>3}  "
+        f"({pct(total_iso_em):>5.1f}%)",
+        f"    accepted + correct  (GT crop, conf≥{conf_threshold}): "
+        f"{total_iso_acc_correct:>3}  ({pct(total_iso_acc_correct):>5.1f}%)",
+        "",
+        "  ステージ 3: 検出器→認識器→gate (累積)",
+        f"    end-to-end recall (sliding-window):        {total_e2e:>3}  "
+        f"({pct(total_e2e):>5.1f}%)",
+        "",
+        "  ╭─ 損失の責任分解 ─╮",
+        f"  │  検出器          : {pct(total_gt - total_cov_03):>5.1f}% "
+        f"(GT を見つけられず)",
+        f"  │  認識器 (天井)   : {pct(total_cov_03 - total_iso_em):>5.1f}% "
+        f"(clean crop でも認識誤り)",
+        f"  │  認識器→gate     : {pct(total_iso_em - total_e2e):>5.1f}% "
+        f"(gate 通過時 reject、または窓ズレ)",
+        f"  │  最終 E2E recall : {pct(total_e2e):>5.1f}%",
+        "  ╰──────────────╯",
+    ]
     return "\n".join(lines)
 
 
@@ -660,6 +846,9 @@ def main(argv: list[str] | None = None) -> int:
             f"({pat_high:>5} {100 * pat_high / max(n, 1):>5.1f}%)  "
             f"{nonempty_pct:>7.1f}% {avg_conf:>9.3f}"
         )
+
+    # Stage Loss Budget (新規)
+    print(_format_loss_budget(results, args.confidence_threshold))
     return 0
 
 
