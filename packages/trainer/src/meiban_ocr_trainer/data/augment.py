@@ -31,11 +31,27 @@ from meiban_ocr_trainer.constants import (
 
 
 def build_train_transform() -> A.Compose:
-    """v1 (緩め) augmentation。"""
+    """v3 augmentation: 窓ズレ耐性を組み込む (Phase 2c+ fix)。
+
+    v1 → v3 で **translate と scale 範囲を拡大**:
+    sliding-window 窓は GT text_bbox と IoU 0.47 程度しか重ならない (構造的天井)。
+    クロップ内で text が中央からズレている、または scale が違う窓を訓練で経験させないと、
+    isolated test で 48% EM 出る認識器でも E2E recall 0% に落ちる。
+
+    v2 (boセ) は augment_v2_too_aggressive.py に保存済 (blur/noise 強化が under-fit を招いた)。
+    v3 は **translate/scale だけ強化**して認識本体への影響は控えめ。
+    """
     return A.Compose([
-        # 幾何 (真上付近想定なので控えめ)
-        A.Affine(rotate=(-2, 2), scale=(0.92, 1.08), shear=(-2, 2), p=0.4),
-        A.Perspective(scale=(0.01, 0.04), p=0.3),
+        # 幾何: 窓ズレ耐性を強化 (translate ±15%、scale 0.75-1.25)
+        A.Affine(
+            rotate=(-3, 3),
+            scale=(0.75, 1.25),                 # 窓内 text サイズの揺らぎを学習
+            translate_percent=(-0.15, 0.15),    # 窓中心からのズレを学習
+            shear=(-2, 2),
+            p=0.7,                              # ほぼ毎回適用
+            mode=0,                             # cv2.BORDER_CONSTANT (= 0 padding)
+        ),
+        A.Perspective(scale=(0.01, 0.05), p=0.3),
 
         # 照明
         A.RandomBrightnessContrast(brightness_limit=0.25, contrast_limit=0.25, p=0.5),

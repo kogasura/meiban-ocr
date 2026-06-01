@@ -277,16 +277,48 @@ def evaluate_isolated_recognizer(
     pattern,
     conf_threshold: float,
     batch_size: int = 32,
+    crops_root: Path | None = None,
+    image_stem: str | None = None,
 ) -> dict:
     """ステージ分離評価: GT text_bbox から直接 crop して認識器単独を測る。
 
     検出器の影響を完全に排除し、「認識器の天井性能」を測定する。
+
+    `crops_root` + `image_stem` 指定時は **extract_crops 済の PNG** から読む
+    (rewrite_real_to_match_label.py 適用後の画像と GT が整合する状態を前提)。
+    None なら image_rgb から bbox crop (旧挙動、フルイメージが GT 一致してる前提)。
     """
     if not positives:
         return {"n": 0}
 
-    crops = [crop_and_normalize(image_rgb, list(p.text_bbox or p.bbox))
-             for p in positives]
+    if crops_root is not None and image_stem is not None:
+        # 各 split の real/img_*_l*.png を順に探して読む
+        crops = []
+        for p in positives:
+            png_name = f"{image_stem}_l{p.id:02d}.png"
+            # split は labels.tsv から取らずに直接ファイル探索
+            found = None
+            for split_dir in ("train/real", "val/real", "test/real"):
+                cand = crops_root / split_dir / png_name
+                if cand.exists():
+                    found = cand
+                    break
+            if found is None:
+                # フォールバック: フルイメージから crop
+                crops.append(crop_and_normalize(image_rgb, list(p.text_bbox or p.bbox)))
+                continue
+            arr_bgr = cv2.imread(str(found), cv2.IMREAD_COLOR)
+            arr_rgb = cv2.cvtColor(arr_bgr, cv2.COLOR_BGR2RGB)
+            # 画像全体を入力サイズにリサイズ + normalize (crop_and_normalize と同じ後半)
+            resized = cv2.resize(arr_rgb, (INPUT_WIDTH, INPUT_HEIGHT),
+                                 interpolation=cv2.INTER_AREA)
+            y = (0.2126 * resized[..., 0]
+                 + 0.7152 * resized[..., 1]
+                 + 0.0722 * resized[..., 2])
+            crops.append(((y / 255.0 - 0.5) / 0.5).astype(np.float32))
+    else:
+        crops = [crop_and_normalize(image_rgb, list(p.text_bbox or p.bbox))
+                 for p in positives]
     gts = [p.text for p in positives]
 
     input_name = session.get_inputs()[0].name
@@ -525,11 +557,16 @@ def diagnose_image(
     # 6. 検出器の本来評価 (per-GT-positive coverage + end-to-end recall)
     detector_eval = evaluate_detector(windows, pos_bboxes, pred_per_window)
 
-    # 7. ステージ分離評価 (= 認識器単独の天井性能) — GT text_bbox から直接 crop
+    # 7. ステージ分離評価 (= 認識器単独の天井性能)
+    # rewrite_real_to_match_label.py で data/recognition/{split}/real/*.png は
+    # GT に整合済 (画像内テキスト = ラベル) → そこから crop を読む。
+    # フルイメージ (samples/*.jpg) は実シリアルのままなので使わない。
     positives = [r for r in ann.positives if r.claude_verified]
     isolated = evaluate_isolated_recognizer(
         img_rgb, positives, session, model_type, tokenizer, pattern,
         conf_threshold=conf_threshold,
+        crops_root=Path("data/recognition"),
+        image_stem=Path(ann.image).stem,
     )
 
     return {
