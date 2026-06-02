@@ -1,4 +1,19 @@
-"""Memorization gate: 訓練 summary.json の予測値に dummy 範囲外の serial が無いか検証。
+"""[DEPRECATED 2026-06-02] Memorization gate: 訓練予測の dummy 範囲外 serial 検証。
+
+⚠️  このツールは現行ポリシーでは **使用しない**。
+
+  経緯:
+    - 旧ポリシー (npm publish 前提): モデル出力に実シリアルが混入したら export を
+      block する保険ゲート。 訓練が dummy のみで終わることを CI で保証していた。
+    - 2026-06-02 ポリシー転換: モデル自体を公開しない (URANUS2 直接配置のみ)、
+      かつ実シリアル訓練を許容する方針に切替。 出力に実シリアルが入ることは
+      想定挙動になり、 本ゲートは無効化。
+
+  ファイル自体は参考実装として残置。 demo モデル (公開を想定したもの) を訓練
+  する際は、 STRICT_DUMMY_ONLY env を立てたうえで本ゲートを export.py から呼ぶと
+  二重防御になる。
+
+----
 
 Iter5 v5 #9 fix。訓練後の `runs/<run>/summary.json` には `test_samples` / `val_samples`
 の `pred` がそのまま記録される。これが `E[39]\\d{2}MM\\d{6}` のうち `E300MM` 以外

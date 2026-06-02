@@ -34,6 +34,13 @@ packages/runtime/src/assets/*.onnx
 *.mov
 *.avi
 
+# Annotations 本体は実シリアルを含むため commit 禁止 (2026-06-02 ポリシー転換)。
+# 公開済の dummy demo は annotations_demo/ に分離して保持。
+/annotations/
+
+# URANUS2 ビルド成果物 (実シリアル trained モデルを含む)。 git にも npm にも出さない。
+/dist-uranus2/
+
 # Test set (隔離。Git LFS か別管理を検討)
 /samples_test/*
 !/samples_test/.gitkeep

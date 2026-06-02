@@ -1,4 +1,16 @@
-"""real positive crop の画像内テキストをラベル GT に合わせて書き換える (one-shot)。
+"""[DEPRECATED 2026-06-02] real positive crop の画像内テキストを GT に揃える one-shot ツール。
+
+⚠️  このスクリプトは現行ポリシーでは **使用しない**。
+
+  経緯:
+    - 旧ポリシー: annotations の text は dummy 化されていたが、 画像内のテキストは
+      実シリアル → 画像と GT の整合のため、 inpaint + 再描画で画像も dummy に揃えた。
+    - 2026-06-02 ポリシー転換: annotations に実シリアルを許容するため、 画像 = 実、
+      GT = 実 で初めから整合。 本ツールの実行は不要に。
+
+  ファイル自体は参考実装として残置。
+
+----
 
 問題: security sanitize で annotations のテキストフィールドだけ ダミー化 (e.g.,
 `E305MM503786` → `E300MM000013`) したが、**画像内のピクセルは実シリアルのまま**。

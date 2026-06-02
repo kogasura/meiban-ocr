@@ -1,4 +1,18 @@
-"""テキスト書き換え水増し。HANDOFF.md §4 Step 3 を実装。
+"""[DEPRECATED 2026-06-02] テキスト書き換え水増し。
+
+⚠️  このモジュールは現行ポリシーでは **使用しない**。
+
+  経緯:
+    - 旧ポリシー (npm publish 前提) では、 実シリアルが公開モデルに混入する経路を
+      遮断するため、 訓練前にテキスト領域を inpaint + dummy 再描画していた。
+    - 2026-06-02 ポリシー転換で npm publish を廃止し URANUS2 直接配置に切替。
+      annotations と訓練データに実シリアルを許容するため、 本モジュールの inpaint
+      工程は不要に。 inpaint artifact による訓練分布の歪みも解消。
+
+  ファイル自体は参考実装として残置。 旧 PR の再現や、 将来 demo dataset 用に
+  dummy 化したい場面で再利用可能。
+
+----
 
 実画像クロップ (data/recognition/train/real/*.png) のテキスト部分を
 ランダム生成した別の Ericsson serial に置き換え、data/recognition/train/replaced/ に出力。

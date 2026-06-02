@@ -1,17 +1,47 @@
 # Security Policy
 
-`@meiban-ocr/runtime` and the `meiban-ocr` repository's security policy.
+`meiban-ocr` repository's security policy.
+
+> ## ⚠️ 2026-06-02 Policy Change: Internal Distribution Only
+>
+> This project is **no longer published to npm**.
+>
+> - `packages/runtime/package.json` has `"private": true` to **physically block** `npm publish`.
+> - The runtime is distributed exclusively via **URANUS2 direct deployment** (local upload).
+> - This enables training on real Ericsson serial data without leaking via published model
+>   artifacts. The trained ONNX file never leaves the operator's controlled environment.
+>
+> What changed:
+>
+> | Before (≤ v0.3.2) | After (2026-06-02 →) |
+> |---|---|
+> | npm publish to `@meiban-ocr/runtime` | npm publish blocked; `pnpm build:uranus2` produces a local bundle |
+> | Annotations forced to dummy `E300MM*` serials | Annotations stored locally with real serials (`annotations/` gitignored) |
+> | `text_replace.py` used to inpaint images to dummy | Skipped — real images used as-is for training |
+> | `check_no_memorized_prefix.py` blocked export of real-serial-aware models | Deprecated; model output may contain real serials by design |
+> | CI scanned tracked files for `E[39]\d{2}MM\d{6}` (must be `E300MM` only) | CI now verifies `annotations/`, `data/`, `samples/`, `models/`, `dist-uranus2/` remain untracked (defense in depth) |
+>
+> What did NOT change:
+>
+> - `samples/`, `data/`, `models/`, `runs/` remain `.gitignore`d (no commit path for raw images / weights).
+> - GitHub repository remains public — only **code** is public, never data or models.
+> - All historical npm versions ≤ v0.3.2 used dummy training data and remain safe to consume.
+>   Versions ≥ v0.4.0-internal are **NOT** for npm publication.
 
 ## Supported versions
 
+> Historical npm distribution context. As of 2026-06-02 the package is internal-only;
+> these notes apply to legacy consumers who already installed earlier versions.
+
 | Version | Status |
 |---|---|
-| **0.3.2** | **active (recommended)** |
+| 0.4.0-internal (current) | **internal-only**, npm publish blocked, real-serial training allowed |
+| **0.3.2** | last npm-published version (dummy training only) |
 | 0.3.1 | superseded — `dist/vendors.d.ts` had a stale internal-figures comment; upgrade to 0.3.2 |
 | 0.3.0 | deprecated — missing `modelUrl` scheme validation |
 | ≤ 0.2.3 | deprecated — missing `cdnUrl` scheme validation (v0.2.0-0.2.2) or missing `modelUrl` validation (v0.2.3) |
 
-Use the **latest** version. `npm install @meiban-ocr/runtime@latest`.
+For new internal deployment, use the `pnpm build:uranus2` workflow (see HANDOFF.md §5).
 
 ## Reporting a vulnerability
 
