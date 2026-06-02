@@ -12,7 +12,7 @@ export {
 } from './constants';
 export { ericsson, type VendorPattern, VENDOR_PATTERNS } from './vendors';
 export { ctcGreedyDecode, applyCorrectionPipeline, preprocessText } from './decoder';
-export type { ImageInput } from './preprocess';
+export type { CropOptions, ImageInput, RecenterOptions } from './preprocess';
 export type { BBox, DetectorFn } from './detectors/types';
 export {
   createSlidingWindowDetector,
