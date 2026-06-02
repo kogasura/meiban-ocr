@@ -29,7 +29,7 @@ import {
   type SlidingWindowOptions,
 } from '../detectors/sliding-window';
 import type { BBox, DetectorFn } from '../detectors/types';
-import { cropAndNormalizeBatch } from '../preprocess';
+import { cropAndNormalizeBatch, type RecenterOptions } from '../preprocess';
 import { ericsson, VENDOR_PATTERNS, type VendorPattern } from '../vendors';
 import { createOrtSession } from './_shared';
 import type { Backend, CustomBackendInit, OCRResult } from './types';
@@ -44,6 +44,7 @@ export class CustomBackend implements Backend {
   private readonly minConfidence: number;
   private readonly maxBatchSize: number;
   private readonly prefilterOption: boolean | PrefilterOptions;
+  private readonly recenterOption: boolean | RecenterOptions | undefined;
 
   private constructor(
     session: ort.InferenceSession,
@@ -57,6 +58,7 @@ export class CustomBackend implements Backend {
     this.minConfidence = options.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
     this.maxBatchSize = options.maxBatchSize ?? 64;
     this.prefilterOption = options.prefilter ?? true;
+    this.recenterOption = options.recenter;
   }
 
   static async create(options: CustomBackendInit = {}): Promise<CustomBackend> {
@@ -97,9 +99,14 @@ export class CustomBackend implements Backend {
 
     const scored: ScoredDetection[] = [];
 
+    // recenter: PR #1 で preprocess.ts に追加された window 再センタリング。
+    // undefined → cropAndNormalize 側の default (true) に委譲。
+    const cropOpts: { recenter?: boolean | RecenterOptions } =
+      this.recenterOption === undefined ? {} : { recenter: this.recenterOption };
+
     for (let i = 0; i < bboxes.length; i += this.maxBatchSize) {
       const batchBoxes = bboxes.slice(i, i + this.maxBatchSize);
-      const flat = cropAndNormalizeBatch(imageData, batchBoxes);
+      const flat = cropAndNormalizeBatch(imageData, batchBoxes, cropOpts);
       const inputTensor = new ort.Tensor(
         'float32',
         flat,

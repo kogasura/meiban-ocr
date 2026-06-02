@@ -14,6 +14,7 @@
 import type { PrefilterOptions } from '../detectors/prefilter';
 import type { SlidingWindowOptions } from '../detectors/sliding-window';
 import type { DetectorFn } from '../detectors/types';
+import type { RecenterOptions } from '../preprocess';
 import type { VendorPattern } from '../vendors';
 
 /** Backend が返す共通 result 型 (MeibanOCR.ts と一致)。 */
@@ -69,6 +70,14 @@ export interface CustomBackendInit extends CommonBackendOptions {
    * - `false`: 無効化 (検出器の bbox をそのまま使う)
    */
   prefilter?: boolean | PrefilterOptions;
+  /**
+   * Window 再センタリング (Phase 2b, PR #1)。
+   * sliding-window 窓内で text が横にズレているとき column activity の重心で
+   * bbox を水平シフトしてから crop。 fixed-head OCR の位置固定契約を保つ。
+   * - `true` (default) / option
+   * - `false`: 旧挙動 (ズレた窓をそのまま渡す)
+   */
+  recenter?: boolean | RecenterOptions;
 }
 
 /**

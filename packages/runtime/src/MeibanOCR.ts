@@ -9,9 +9,8 @@
  *
  * Backend 選択:
  *   - `backend: 'custom'` (default): 自作 12-head fixed-length OCR
- *     既存挙動 100% 互換 (PR #1 augment v1 + recenter、 PR #2 internal distribution policy)
- *   - `backend: 'paddle'` (Phase 2 で実装): PP-OCRv4 mobile EN 版
- *     det + rec の 2 段、 サイズ ~10MB、 既製モデル使用で訓練不要
+ *     PR #1 augment v1 + recenter (preprocess.ts:recenterBbox) を内包。
+ *   - `backend: 'paddle'`: PP-OCRv4 mobile det + rec の 2 段、 訓練不要、 ~15MB
  */
 
 import { createBackend } from './backends/factory';
@@ -30,8 +29,10 @@ import { imageInputToImageData, type ImageInput } from './preprocess';
  * `backend` で実装を選択 (default 'custom')。 backend 別の専用フィールドは
  * 該当 backend のみ参照し、 他フィールドは無視する。
  *
- * Custom backend で使うフィールド: modelUrl / modelBytes / detector / maxBatchSize / prefilter
- * Paddle backend で使うフィールド: detModelUrl / recModelUrl / dict 等 (Phase 2)
+ * Custom backend で使うフィールド: modelUrl / modelBytes / detector / maxBatchSize /
+ *                                   prefilter / recenter
+ * Paddle backend で使うフィールド: detModelUrl / recModelUrl / detModelBytes /
+ *                                   recModelBytes / dict / 等
  */
 export type MeibanOCROptions = {
   /** 認識バックエンド (default 'custom')。 */

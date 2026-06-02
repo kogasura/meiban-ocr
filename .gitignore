@@ -60,6 +60,7 @@ packages/runtime/src/assets/*.onnx
 # 公開リポジトリに含めない方針。共有が必要な metrics は別途
 # packages/trainer/README.md / 各 release ノートに sanitize 済みで記述。
 /runs/
+/packages/trainer/runs/
 
 # Misc
 .DS_Store

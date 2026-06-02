@@ -115,6 +115,75 @@ def generate_windows(w: int, h: int, opts: dict | None = None) -> list[list[int]
 
 # ===== preprocess (mirror of packages/runtime/src/preprocess.ts) =====
 
+def recenter_bbox(
+    img_rgb: np.ndarray,
+    bbox: list[int],
+    expand_ratio: float = 0.3,
+    min_activity: float = 5.0,
+    max_shift_ratio: float = 0.4,
+) -> list[int]:
+    """`packages/runtime/src/preprocess.ts:recenterBbox` の Python ミラー。
+
+    sliding-window 窓内で text が横にズレているときに、 column activity の重心で
+    bbox を水平シフトする。fixed-head OCR の「位置 p = p 番目の文字」契約を保つ。
+    """
+    h, w = img_rgb.shape[:2]
+    x1, y1, x2, y2 = bbox
+    bw = x2 - x1
+    bh = y2 - y1
+    if bw <= 2 or bh <= 0:
+        return [x1, y1, x2, y2]
+
+    expand = int(round(bw * expand_ratio))
+    sx1 = max(0, x1 - expand)
+    sx2 = min(w, x2 + expand)
+    sw = sx2 - sx1
+    if sw <= 2:
+        return [x1, y1, x2, y2]
+    sy1 = max(1, y1)
+    sy2 = min(h - 1, y2)
+    if sy2 <= sy1:
+        return [x1, y1, x2, y2]
+
+    # Rec.709 luminance on the strip
+    strip = img_rgb[sy1:sy2, sx1:sx2].astype(np.float32)
+    gray = 0.2126 * strip[..., 0] + 0.7152 * strip[..., 1] + 0.0722 * strip[..., 2]
+
+    # 列ごとの 1D 水平勾配積算: 中心列 dx について |gray[:, dx+1] - gray[:, dx-1]|
+    col_activity = np.zeros(sw, dtype=np.float32)
+    if sw >= 3:
+        diff = np.abs(gray[:, 2:] - gray[:, :-2]).sum(axis=0)
+        col_activity[1:-1] = diff
+
+    # 3 タップ平均
+    smoothed = col_activity.copy()
+    if sw >= 3:
+        smoothed[1:-1] = (col_activity[:-2] + col_activity[1:-1] + col_activity[2:]) / 3.0
+
+    total_activity = float(smoothed.sum())
+    avg_activity = total_activity / max(1, sw * (sy2 - sy1))
+    if avg_activity < min_activity or total_activity <= 0:
+        return [x1, y1, x2, y2]
+
+    indices = np.arange(sw, dtype=np.float32)
+    centroid_local = float((smoothed * indices).sum() / total_activity)
+    centroid_image_x = sx1 + centroid_local
+    old_center_x = (x1 + x2) / 2.0
+    dx = centroid_image_x - old_center_x
+    max_shift = max_shift_ratio * bw
+    if dx > max_shift:
+        dx = max_shift
+    elif dx < -max_shift:
+        dx = -max_shift
+
+    new_x1 = int(round(x1 + dx))
+    if new_x1 < 0:
+        new_x1 = 0
+    if new_x1 + bw > w:
+        new_x1 = w - bw
+    return [new_x1, y1, new_x1 + bw, y2]
+
+
 def crop_and_normalize(img_rgb: np.ndarray, bbox: list[int]) -> np.ndarray:
     """bbox 領域を 32×128 にリサイズ → Rec.709 グレースケール → [-1, 1] 正規化。"""
     x1, y1, x2, y2 = bbox
@@ -428,6 +497,7 @@ def diagnose_image(
     edge_threshold: float | None = None,
     var_threshold: float | None = None,
     batch_size: int = 64,
+    recenter: bool = False,
 ) -> dict:
     img_bgr = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
     if img_bgr is None:
@@ -495,9 +565,15 @@ def diagnose_image(
     confs: list[float] = [0.0] * len(windows)
     inference_indices = [i for i, p in enumerate(passes_filter) if p]
     t_infer = 0.0
+    # 2026-06-01 window recenter: 各窓に recenterBbox を適用して fixed-head の
+    # 位置契約 (位置 p = p 番目の文字) を保つ。 runtime/preprocess.ts と同等。
+    # runtime 側の default は True、 診断ツールは opt-in (--recenter) で比較目的。
+    eff_windows: list[list[int]] = (
+        [recenter_bbox(img_rgb, w) for w in windows] if recenter else windows
+    )
     for i in range(0, len(inference_indices), batch_size):
         batch_idx = inference_indices[i:i + batch_size]
-        batch = [windows[j] for j in batch_idx]
+        batch = [eff_windows[j] for j in batch_idx]
         crops = np.stack([crop_and_normalize(img_rgb, b) for b in batch])
         x = crops[:, None, :, :]  # (N, 1, H, W)
         t3 = time.time()
@@ -769,6 +845,13 @@ def main(argv: list[str] | None = None) -> int:
         help="局所分散平均がこの値未満なら pre-filter で skip (default: 無効)",
     )
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument(
+        "--recenter", action="store_true",
+        help=(
+            "Phase 2b: sliding-window 窓内で text を column activity の重心に "
+            "水平シフトしてから crop。 runtime/preprocess.ts:recenterBbox と同等。"
+        ),
+    )
     args = parser.parse_args(argv)
 
     scales = [float(s.strip()) for s in args.scales.split(",")]
@@ -803,6 +886,7 @@ def main(argv: list[str] | None = None) -> int:
             edge_threshold=args.edge_threshold,
             var_threshold=args.var_threshold,
             batch_size=args.batch_size,
+            recenter=args.recenter,
         )
         print(_format_report(r, args.confidence_threshold))
         results.append(r)
