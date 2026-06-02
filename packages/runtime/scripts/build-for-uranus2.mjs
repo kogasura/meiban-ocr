@@ -26,6 +26,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -76,8 +77,22 @@ function copyRuntime() {
 }
 
 function copyCustomModel() {
-  // 優先: 12-head v2-fh、 次善: 旧 v1 CRNN
+  // 優先順:
+  //   1. meiban-ocr-real-v<N>.onnx の最大 N (実データ訓練版、 推奨)
+  //   2. meiban-ocr-v2-fh.onnx (旧 fixed-head)
+  //   3. meiban-ocr-v1.onnx (旧 CRNN+CTC)
+  const modelsDir = resolve(repoRoot, 'models');
+  const realCandidates = [];
+  if (existsSync(modelsDir)) {
+    const realRe = /^meiban-ocr-real-v(\d+)\.onnx$/;
+    for (const f of readdirSync(modelsDir)) {
+      const m = realRe.exec(f);
+      if (m) realCandidates.push({ path: resolve(modelsDir, f), version: parseInt(m[1], 10) });
+    }
+    realCandidates.sort((a, b) => b.version - a.version);
+  }
   const candidates = [
+    ...realCandidates.map(c => c.path),
     resolve(repoRoot, 'models/meiban-ocr-v2-fh.onnx'),
     resolve(repoRoot, 'models/meiban-ocr-v1.onnx'),
   ];
@@ -86,7 +101,9 @@ function copyCustomModel() {
     log('WARN: no custom ONNX model found in models/, skipping custom backend');
     return null;
   }
-  const dstName = src.endsWith('v2-fh.onnx')
+  const isRealVer = /meiban-ocr-real-v\d+\.onnx$/.test(src);
+  const isV2Fh = src.endsWith('v2-fh.onnx');
+  const dstName = (isRealVer || isV2Fh)
     ? 'meiban-ocr-fixed-head.onnx'
     : 'meiban-ocr-crnn.onnx';
   const dst = resolve(outDir, 'model', 'custom', dstName);
@@ -97,10 +114,11 @@ function copyCustomModel() {
   return {
     type: 'custom',
     name: dstName,
+    source: src.split('/').pop(),  // 元ファイル名を manifest に記録
     relpath: `model/custom/${dstName}`,
     size,
     hash,
-    format: src.endsWith('v2-fh.onnx') ? 'fixed-head-12pos' : 'crnn-ctc',
+    format: (isRealVer || isV2Fh) ? 'fixed-head-12pos' : 'crnn-ctc',
   };
 }
 
