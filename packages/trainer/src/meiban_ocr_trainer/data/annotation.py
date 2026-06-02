@@ -65,10 +65,20 @@ _TEXT_VISIBLE_FORBIDDEN_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 # positive region の `text` (= ground truth serial) に許容される pattern。
-# v5 #6 fix: dummy 範囲 `^E300MM\d{6}$` のみ。本番 Ericsson serial (E[39]\d{2}MM\d{6})
-# は CLAUDE.md / SECURITY.md で禁止されており、本来 annotations に commit されない
-# べきだが、annotation.py 経由で防御層を一段追加する (CI lint と二重)。
-_ALLOWED_POSITIVE_TEXT = re.compile(r"^E300MM\d{6}$")
+# 2026-06-02 ポリシー転換: npm publish を廃止し URANUS2 直接配置に切り替えたため、
+# annotations は実シリアルを許容する。 既存 dummy 制約 (`^E300MM\d{6}$`) は
+# `STRICT_DUMMY_ONLY` env var で opt-in 復活可能 (公開予定の demo データ作成時用)。
+#
+# annotations/ は .gitignore で commit 経路から物理除外されており、 実シリアルが
+# 公開リポジトリに漏出する経路は閉じている。 SECURITY.md を参照。
+import os as _os
+
+_STRICT_DUMMY_ONLY = _os.getenv("MEIBAN_OCR_STRICT_DUMMY_ONLY", "").lower() in (
+    "1", "true", "yes",
+)
+_DUMMY_ONLY_POSITIVE_TEXT = re.compile(r"^E300MM\d{6}$")
+# 実シリアル含む全 Ericsson pattern を許容する relaxed mode の正規表現
+_RELAXED_POSITIVE_TEXT = re.compile(r"^E[39]\d{2}MM\d{6}$")
 
 # 画像レベルのメタキー (loader/saver で破壊しない)
 _PRESERVED_META_KEYS = (
@@ -115,13 +125,20 @@ class Region:
                 raise ValueError(
                     f"positive region id={self.id} must have non-empty text"
                 )
-            # v5 #6 fix: positive text は dummy 範囲のみ許可。real Ericsson serial
-            # (E305MM, E326MM 等) を annotations に commit する経路を遮断する。
-            if not _ALLOWED_POSITIVE_TEXT.match(self.text):
+            # 2026-06-02 policy: 実シリアル (E[39]xxMMxxxxxx) を許容する relaxed mode が
+            # default。 STRICT_DUMMY_ONLY=1 で dummy のみ許容する旧挙動に戻せる。
+            # annotations/ は .gitignore で commit 経路から物理除外されており、
+            # 公開リポジトリへの漏出経路は閉じている。
+            if _STRICT_DUMMY_ONLY:
+                if not _DUMMY_ONLY_POSITIVE_TEXT.match(self.text):
+                    raise ValueError(
+                        f"positive region id={self.id} text must match dummy pattern "
+                        f"^E300MM\\d{{6}}$ (STRICT_DUMMY_ONLY mode), got {self.text!r}."
+                    )
+            elif not _RELAXED_POSITIVE_TEXT.match(self.text):
                 raise ValueError(
-                    f"positive region id={self.id} text must match dummy pattern "
-                    f"^E300MM\\d{{6}}$, got {self.text!r}. "
-                    f"Real Ericsson serials must not be committed (see SECURITY.md)."
+                    f"positive region id={self.id} text must match Ericsson pattern "
+                    f"^E[39]\\d{{2}}MM\\d{{6}}$, got {self.text!r}."
                 )
         # info disclosure 防止: text_visible にリアル数字や vendor pattern を入れない。
         # Why: text_visible は学習に使われないが public JSON commit に含まれるため、

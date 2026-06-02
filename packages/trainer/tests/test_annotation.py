@@ -209,31 +209,65 @@ def test_text_visible_rejects_long_digit_sequence() -> None:
         )
 
 
-def test_positive_text_rejects_non_dummy_pattern() -> None:
-    """positive text は E300MM\\d{6} dummy 範囲のみ許可 (v5 #6)。"""
-    # vendor 形式だが E300MM 以外 → 拒否
-    with pytest.raises(ValueError, match="dummy pattern"):
-        Region(
-            id=0, category="positive", bbox=[0, 0, 10, 10],
-            text="E305MM999999",
-        )
-    # vendor 形式外 (任意文字列) → 拒否
-    with pytest.raises(ValueError, match="dummy pattern"):
-        Region(
-            id=1, category="positive", bbox=[0, 0, 10, 10],
-            text="ARBITRARY",
-        )
-    # 桁数違い → 拒否
-    with pytest.raises(ValueError, match="dummy pattern"):
-        Region(
-            id=2, category="positive", bbox=[0, 0, 10, 10],
-            text="E300MM12345",  # 5 桁
-        )
-    # 正しい dummy → OK
+def test_positive_text_accepts_real_ericsson_pattern() -> None:
+    """2026-06-02 policy: 実シリアル (E[39]xxMMxxxxxx) を default で許容。
+
+    annotations/ は .gitignore で commit 経路から物理除外されているため、
+    annotation データ自体への dummy 強制は不要。 後段の URANUS2 直配信が成立。
+    STRICT_DUMMY_ONLY env で旧 strict 挙動に opt-in 復活可能 (demo 用)。
+    """
+    # 実シリアル: 通る
     Region(
-        id=3, category="positive", bbox=[0, 0, 10, 10],
+        id=0, category="positive", bbox=[0, 0, 10, 10],
+        text="E325MM500757",
+    )
+    # dummy: 通る (互換)
+    Region(
+        id=1, category="positive", bbox=[0, 0, 10, 10],
         text="E300MM000001",
     )
+    # vendor pattern 違反 (ARBITRARY): 拒否
+    with pytest.raises(ValueError, match="Ericsson pattern"):
+        Region(
+            id=2, category="positive", bbox=[0, 0, 10, 10],
+            text="ARBITRARY",
+        )
+    # 桁数違い (E300MM12345 = 5 桁): 拒否
+    with pytest.raises(ValueError, match="Ericsson pattern"):
+        Region(
+            id=3, category="positive", bbox=[0, 0, 10, 10],
+            text="E300MM12345",
+        )
+    # prefix が範囲外 (E[39] 以外): 拒否
+    with pytest.raises(ValueError, match="Ericsson pattern"):
+        Region(
+            id=4, category="positive", bbox=[0, 0, 10, 10],
+            text="E125MM500757",  # E1xx は不許可
+        )
+
+
+def test_strict_dummy_only_env_restores_v5_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MEIBAN_OCR_STRICT_DUMMY_ONLY=1 で旧 v5 #6 挙動に戻る (demo 用)。"""
+    # env を立てて annotation モジュールを reload する必要 (定数化済のため)
+    import importlib
+
+    monkeypatch.setenv("MEIBAN_OCR_STRICT_DUMMY_ONLY", "1")
+    import meiban_ocr_trainer.data.annotation as ann_mod
+    importlib.reload(ann_mod)
+    try:
+        with pytest.raises(ValueError, match="dummy pattern"):
+            ann_mod.Region(
+                id=0, category="positive", bbox=[0, 0, 10, 10],
+                text="E325MM500757",
+            )
+        ann_mod.Region(
+            id=1, category="positive", bbox=[0, 0, 10, 10],
+            text="E300MM000001",
+        )
+    finally:
+        # env を戻して reload (他のテストに影響しないように)
+        monkeypatch.delenv("MEIBAN_OCR_STRICT_DUMMY_ONLY", raising=False)
+        importlib.reload(ann_mod)
 
 
 def test_text_visible_allows_safe_strings() -> None:

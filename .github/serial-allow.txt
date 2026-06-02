@@ -1,0 +1,23 @@
+# Real-pattern serial allowlist for CI security-scan.yml
+#
+# Lines in this file are paths (relative to repo root) where docstring examples
+# or test fixtures legitimately contain E[39]xx MM xxxxxx patterns other than
+# E300MM. These are illustrative — not real customer serials.
+#
+# Format: one path per line. Comments (#) and blank lines ignored.
+#
+# To add a new exception:
+#   1. Be sure the file truly contains no leaked customer data
+#   2. Add the path here with a short justification comment
+
+# Deprecated security tool — docstrings reference legacy real-looking examples
+# to explain the past data leak vector. Tool itself is no longer invoked.
+packages/trainer/src/meiban_ocr_trainer/tools/check_no_memorized_prefix.py
+packages/trainer/src/meiban_ocr_trainer/tools/rewrite_real_to_match_label.py
+
+# Test fixture: intentionally uses non-E300MM Ericsson pattern to verify
+# annotation.py rejects them in STRICT_DUMMY_ONLY mode.
+packages/trainer/tests/test_annotation.py
+
+# Security policy docs reference example patterns for explanation only.
+SECURITY.md
