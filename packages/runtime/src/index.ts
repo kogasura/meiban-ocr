@@ -3,6 +3,14 @@ export {
   type MeibanOCROptions,
   type OCRResult,
 } from './MeibanOCR';
+export type {
+  AnyBackendInit,
+  Backend,
+  BackendType,
+  CommonBackendOptions,
+  CustomBackendInit,
+  PaddleBackendInit,
+} from './backends/types';
 export {
   BLANK_IDX,
   CHARSET,
