@@ -35,6 +35,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
 from PIL import Image
 
 from meiban_ocr_trainer.data.annotation import Annotation, Region, load_annotation
@@ -45,6 +46,26 @@ DEFAULT_SPLIT: dict[str, set[str]] = {
     "val": {"img_002"},
     "test": {"img_004"},
 }
+
+VALID_SPLITS = ("train", "val", "test")
+
+
+def _load_split_map(path: Path | None) -> dict[str, set[str]]:
+    if path is None or not path.exists():
+        return {k: set(v) for k, v in DEFAULT_SPLIT.items()}
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"split-map must be a mapping, got {type(raw).__name__}")
+    out: dict[str, set[str]] = {}
+    for split, stems in raw.items():
+        if split not in VALID_SPLITS:
+            raise ValueError(f"unknown split {split!r} (allowed: {VALID_SPLITS})")
+        if not isinstance(stems, list):
+            raise ValueError(f"split-map[{split!r}] must be a list")
+        out[split] = set(stems)
+    for split in VALID_SPLITS:
+        out.setdefault(split, set())
+    return out
 
 # サブディレクトリ名 (positive/negative で分ける)
 POSITIVE_SUBDIR = "real"
@@ -68,10 +89,16 @@ class CropRecord:
     subkind: str  # negative の subkind、positive は ""
 
 
-def _resolve_split(image_stem: str, split_map: dict[str, set[str]]) -> str | None:
+def _resolve_split(
+    image_stem: str,
+    split_map: dict[str, set[str]],
+    default_split: str | None = None,
+) -> str | None:
     for split, stems in split_map.items():
         if image_stem in stems:
             return split
+    if default_split in VALID_SPLITS:
+        return default_split
     return None
 
 
@@ -118,6 +145,7 @@ def extract_crops(
     output_dir: Path,
     split_map: dict[str, set[str]] | None = None,
     require_verified: bool = True,
+    default_split: str | None = None,
 ) -> dict[str, int]:
     """Stage 1 → Stage 2 変換のメインルーチン。
 
@@ -149,7 +177,7 @@ def extract_crops(
                   file=sys.stderr)
             continue
         image_stem = image_rel.stem
-        split = _resolve_split(image_stem, split_map)
+        split = _resolve_split(image_stem, split_map, default_split)
         if split is None:
             print(f"  - {image_stem}: no split assigned, skip", file=sys.stderr)
             continue
@@ -242,6 +270,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="claude_verified=False の region も含める (デフォルトはスキップ)",
     )
+    parser.add_argument(
+        "--split-map", type=Path, default=None,
+        help="split-map YAML (train/val/test に画像 stem を列挙)",
+    )
+    parser.add_argument(
+        "--default-split", type=str, default=None, choices=(*VALID_SPLITS, "none"),
+        help="split-map に無い画像の振り分け先 (default: skip)",
+    )
     args = parser.parse_args(argv)
 
     if not args.samples_dir.is_dir():
@@ -251,11 +287,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[extract_crops] annotations not found: {args.annotations_dir}", file=sys.stderr)
         return 1
 
+    try:
+        split_map = _load_split_map(args.split_map)
+    except (ValueError, yaml.YAMLError) as e:
+        print(f"[extract_crops] split-map error: {e}", file=sys.stderr)
+        return 1
+
+    default_split = None if args.default_split in (None, "none") else args.default_split
+
     counts = extract_crops(
         args.samples_dir,
         args.annotations_dir,
         args.output_dir,
+        split_map=split_map,
         require_verified=not args.include_unverified,
+        default_split=default_split,
     )
     print(f"[extract_crops] done. counts: {counts}", file=sys.stderr)
     return 0

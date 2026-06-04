@@ -27,19 +27,29 @@ import torch
 
 from meiban_ocr_trainer.constants import INPUT_HEIGHT, INPUT_WIDTH
 from meiban_ocr_trainer.models import FixedHeadOCR, TinyOCRModel
+from meiban_ocr_trainer.models.crnn_pretrained import CRNNPretrained
 from meiban_ocr_trainer.tokenizer import CTCTokenizer
 
 
 def _build_model_from_ckpt(ckpt: dict, device: torch.device):
-    """Checkpoint の model_type に応じて TinyOCRModel か FixedHeadOCR を返す。
+    """Checkpoint の model_type / arch に応じて適切なモデルクラスを返す。
 
-    Phase 2c+: 12-head model (`model_type='fixed_head'`) を判別し、適切なクラスを構築。
-    旧 CRNN+CTC checkpoint (model_type 欠落) は TinyOCRModel として扱う (後方互換)。
+    判別優先順:
+      1. `arch` が config に明示されていれば優先 (crnn_pretrained, tiny)
+      2. `model_type` (旧 fixed_head 系統)
+      3. fallback: TinyOCRModel (旧 CRNN+CTC、 model_type 欠落の旧 ckpt)
     """
-    model_type = ckpt.get("model_type", "ctc")
     cfg = ckpt.get("config", {}).get("model", {})
+    arch = cfg.get("arch")
+    model_type = ckpt.get("model_type", "ctc")
 
-    if model_type == "fixed_head":
+    if arch == "crnn_pretrained":
+        # Reconstruct CRNNPretrained. weights は ckpt から load する (pretrained_weight は不要)。
+        model = CRNNPretrained(
+            num_classes=int(cfg.get("num_classes", 37)),
+            hidden_size=int(cfg.get("crnn_hidden_size", 256)),
+        ).to(device).eval()
+    elif model_type == "fixed_head":
         model = FixedHeadOCR(
             use_rnn=ckpt.get("use_rnn", False),
             rnn_hidden=int(cfg.get("rnn_hidden", 64)),

@@ -317,6 +317,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--exts", type=str, default="jpg,jpeg,png", help="comma-separated extensions"
     )
+    parser.add_argument(
+        "--include-existing",
+        action="store_true",
+        help=(
+            "既存 annotation がある画像も走査対象に含める (default OFF = 新規のみ処理)。"
+            " OFF だと iterate 自体を新規にのみ絞る (= 無駄な SKIP ログ + IO を省く)。"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not args.samples_dir.is_dir():
@@ -337,15 +345,30 @@ def main(argv: list[str] | None = None) -> int:
         secondary = primary
 
     exts = {f".{e.lower()}" for e in args.exts.split(",")}
-    images = sorted(p for p in args.samples_dir.iterdir() if p.suffix.lower() in exts)
-    print(f"[auto_label] {len(images)} images to process (mode={args.mode})", file=sys.stderr)
+    all_images = sorted(p for p in args.samples_dir.iterdir() if p.suffix.lower() in exts)
+
+    # default は新規のみ処理 (= 既存 annotation 有る画像を iterate 対象から除外)。
+    # --include-existing 指定時のみ既存も舐めて report に含める。
+    if args.include_existing:
+        images = all_images
+        skipped_existing = 0
+    else:
+        images = [p for p in all_images if not (args.output_dir / f"{p.stem}.json").exists()]
+        skipped_existing = len(all_images) - len(images)
+
+    print(
+        f"[auto_label] {len(images)} images to process "
+        f"(skipped {skipped_existing} existing, mode={args.mode})",
+        file=sys.stderr,
+    )
 
     annotations: list[Annotation] = []
+    # --include-existing 経路の二重防御 (SKIP 検出は維持、 noisy log は include-existing 時のみ)
     for img in images:
         out_json = args.output_dir / f"{img.stem}.json"
         if out_json.exists():
-            print(f"  - {img.name}: SKIP (already labeled)", file=sys.stderr)
-            # 旧 v1 形式でも load_annotation が positive Region に変換する
+            if args.include_existing:
+                print(f"  - {img.name}: SKIP (already labeled)", file=sys.stderr)
             annotations.append(load_annotation(out_json))
             continue
         try:

@@ -78,18 +78,38 @@ function copyRuntime() {
 
 function copyCustomModel() {
   // 優先順:
-  //   1. meiban-ocr-real-v<N>.onnx の最大 N (実データ訓練版、 推奨)
+  //   1. meiban-ocr-real-v<N>(-suffix)?.onnx の最大 N、 同 N 内では suffix 付きを優先
+  //      (例: real-v7-crnn > real-v6-rnn > real-v6 > real-v5)
   //   2. meiban-ocr-v2-fh.onnx (旧 fixed-head)
   //   3. meiban-ocr-v1.onnx (旧 CRNN+CTC)
+  //
+  // suffix の意図:
+  //   - 無印: fixed-head 12-position (旧 default)
+  //   - -rnn: fixed-head + BiGRU 増強
+  //   - -crnn: 完全な CRNN+CTC (clovaai pretrained 系統)
+  //
+  // dstName とformat は ONNX の出力 shape (C=13 or 37) で本来判別すべきだが、
+  // 配信段で重い ONNX を load せずに manifest を書きたいので filename 規約で代用。
   const modelsDir = resolve(repoRoot, 'models');
   const realCandidates = [];
   if (existsSync(modelsDir)) {
-    const realRe = /^meiban-ocr-real-v(\d+)\.onnx$/;
+    // -crnn / -rnn / 無印 の suffix を許容
+    const realRe = /^meiban-ocr-real-v(\d+)(?:-([a-z]+))?\.onnx$/;
     for (const f of readdirSync(modelsDir)) {
       const m = realRe.exec(f);
-      if (m) realCandidates.push({ path: resolve(modelsDir, f), version: parseInt(m[1], 10) });
+      if (m) realCandidates.push({
+        path: resolve(modelsDir, f),
+        version: parseInt(m[1], 10),
+        suffix: m[2] ?? '',
+      });
     }
-    realCandidates.sort((a, b) => b.version - a.version);
+    // version desc、 同 version 内では suffix あり (= 新しい実験変種) を優先
+    realCandidates.sort((a, b) => {
+      if (a.version !== b.version) return b.version - a.version;
+      const aw = a.suffix ? 1 : 0;
+      const bw = b.suffix ? 1 : 0;
+      return bw - aw;
+    });
   }
   const candidates = [
     ...realCandidates.map(c => c.path),
@@ -101,11 +121,10 @@ function copyCustomModel() {
     log('WARN: no custom ONNX model found in models/, skipping custom backend');
     return null;
   }
-  const isRealVer = /meiban-ocr-real-v\d+\.onnx$/.test(src);
-  const isV2Fh = src.endsWith('v2-fh.onnx');
-  const dstName = (isRealVer || isV2Fh)
-    ? 'meiban-ocr-fixed-head.onnx'
-    : 'meiban-ocr-crnn.onnx';
+  // filename 規約で arch を判別: -crnn は CRNN+CTC (C=37)、 それ以外は fixed-head (C=13) 想定
+  const srcName = src.split('/').pop();
+  const isCrnn = /real-v\d+-crnn\.onnx$/.test(srcName) || srcName === 'meiban-ocr-v1.onnx';
+  const dstName = isCrnn ? 'meiban-ocr-crnn.onnx' : 'meiban-ocr-fixed-head.onnx';
   const dst = resolve(outDir, 'model', 'custom', dstName);
   copyFileSync(src, dst);
   const size = statSync(dst).size;
@@ -118,7 +137,7 @@ function copyCustomModel() {
     relpath: `model/custom/${dstName}`,
     size,
     hash,
-    format: (isRealVer || isV2Fh) ? 'fixed-head-12pos' : 'crnn-ctc',
+    format: isCrnn ? 'crnn-ctc' : 'fixed-head-12pos',
   };
 }
 
