@@ -62,6 +62,9 @@ packages/runtime/src/assets/*.onnx
 /runs/
 /packages/trainer/runs/
 
+# Claude Code ローカル設定 (マシン固有: BASH_ENV → gpu-env.sh, ロック等)
+.claude/
+
 # Misc
 .DS_Store
 *.log
