@@ -37,7 +37,12 @@ const DEFAULTS: Required<Omit<SlidingWindowOptions, 'hardLimit'>> & {
   windowWidth: 128,
   strideX: 32,
   strideY: 16,
-  scales: [1.0],
+  // 2026-06-02 update: scales [0.7, 1.0, 1.4] を default に。 単一 scale 1.0 では
+  // plate サイズの幅 (135-230 px、 アスペクト 1.8-5.2) を吸収できず、 diagnose で
+  // detector coverage 73.7%。 multi-scale で 100% (subset n=63) → E2E recall
+  // 59% → 100% に改善。 候補数は 3 倍だが pre-filter で ~70% 削減されるため、
+  // 推論時間の純増は ~2 倍程度。 KGI 300ms/frame の許容範囲内。
+  scales: [0.7, 1.0, 1.4],
   hardLimit: 20000,
 };
 

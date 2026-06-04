@@ -41,15 +41,36 @@ from meiban_ocr_trainer.data.dataset import (
 )
 from meiban_ocr_trainer.metrics import EvaluationReport, compute_metrics, format_report
 from meiban_ocr_trainer.models import TinyOCRModel
+from meiban_ocr_trainer.models.crnn_pretrained import CRNNPretrained
 from meiban_ocr_trainer.tokenizer import CTCTokenizer
 from meiban_ocr_trainer.vendors import get_vendor
 
 
-def build_optimizer(model: TinyOCRModel, cfg_train: dict) -> torch.optim.Optimizer:
-    """ADDENDUM §2 に従い LR を 3 グループに分けた AdamW。"""
+# Why model alias: factory が arch flag に応じて TinyOCRModel か CRNNPretrained を返すため、
+# 関数シグネチャを共通化する。 ともに forward(B,1,32,128) → (B,T,37) で互換。
+AnyCRNNModel = TinyOCRModel | CRNNPretrained
+
+
+def build_optimizer(model: AnyCRNNModel, cfg_train: dict) -> torch.optim.Optimizer:
+    """LR layered AdamW。 arch ごとに layer 構造が違うため model 側でも param groups
+    を計算可能 (CRNNPretrained.get_param_groups)。
+
+    - TinyOCRModel: backbone (low) / rnn (high) / classifier (high)
+    - CRNNPretrained: FeatureExtraction (very low) / SequenceModeling (mid) / Prediction (high)
+    """
+    wd = float(cfg_train.get("weight_decay", 1e-4))
+    if isinstance(model, CRNNPretrained):
+        # pretrained: 各 layer の意味が違うので model 側 helper を使う
+        groups = model.get_param_groups(
+            backbone_lr=float(cfg_train.get("crnn_backbone_lr", 1e-5)),
+            rnn_lr=float(cfg_train.get("crnn_rnn_lr", 1e-4)),
+            head_lr=float(cfg_train.get("crnn_head_lr", 1e-3)),
+            weight_decay=wd,
+        )
+        return torch.optim.AdamW(groups)
+    # TinyOCRModel (default、 ADDENDUM §2)
     lr_backbone = float(cfg_train.get("lr_backbone", 1e-4))
     lr_head = float(cfg_train.get("lr_head", 1e-3))
-    wd = float(cfg_train.get("weight_decay", 1e-4))
     return torch.optim.AdamW(
         [
             {"params": model.backbone.parameters(), "lr": lr_backbone},
@@ -60,9 +81,13 @@ def build_optimizer(model: TinyOCRModel, cfg_train: dict) -> torch.optim.Optimiz
     )
 
 
-def set_backbone_trainable(model: TinyOCRModel, trainable: bool) -> None:
-    for p in model.backbone.parameters():
-        p.requires_grad = trainable
+def set_backbone_trainable(model: AnyCRNNModel, trainable: bool) -> None:
+    """backbone freeze/unfreeze。 arch によって対象 attribute が違うので分岐。"""
+    if isinstance(model, CRNNPretrained):
+        model.freeze_backbone(freeze=not trainable)
+    else:
+        for p in model.backbone.parameters():
+            p.requires_grad = trainable
 
 
 def evaluate_split(
@@ -171,14 +196,30 @@ def train_loop(cfg: dict, output_dir: Path) -> dict:
         num_workers=0, collate_fn=eval_collate,
     )
 
-    # Model
-    model = TinyOCRModel(
-        num_classes=int(cfg["model"]["num_classes"]),
-        rnn_hidden=int(cfg["model"]["rnn_hidden"]),
-        rnn_layers=int(cfg["model"]["rnn_layers"]),
-        dropout=float(cfg["model"]["dropout"]),
-        pretrained=True,
-    ).to(device)
+    # Model factory: arch flag で切替。 既存 TinyOCRModel は default、
+    # CRNNPretrained は clovaai pretrained backbone + reinit head の fine-tune 用。
+    arch = cfg["model"].get("arch", "tiny")
+    if arch == "crnn_pretrained":
+        weight_path = cfg["model"].get("pretrained_weight")
+        if not weight_path or not Path(weight_path).exists():
+            raise FileNotFoundError(
+                f"crnn_pretrained arch requires model.pretrained_weight, "
+                f"got: {weight_path!r}"
+            )
+        print(f"[train] arch=crnn_pretrained, loading from {weight_path}", file=sys.stderr)
+        model = CRNNPretrained.from_pretrained(
+            weight_path,
+            num_classes=int(cfg["model"]["num_classes"]),
+            hidden_size=int(cfg["model"].get("crnn_hidden_size", 256)),
+        ).to(device)
+    else:
+        model = TinyOCRModel(
+            num_classes=int(cfg["model"]["num_classes"]),
+            rnn_hidden=int(cfg["model"]["rnn_hidden"]),
+            rnn_layers=int(cfg["model"]["rnn_layers"]),
+            dropout=float(cfg["model"]["dropout"]),
+            pretrained=True,
+        ).to(device)
 
     optimizer = build_optimizer(model, cfg["train"])
     epochs = int(cfg["train"]["epochs"])
@@ -378,6 +419,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--batch-size", type=int, help="override batch size", default=None)
     parser.add_argument("--output-dir", type=Path, default=None,
                         help="default: runs/YYYYMMDD-HHMMSS")
+    parser.add_argument(
+        "--arch", type=str, default=None, choices=("tiny", "crnn_pretrained"),
+        help="model architecture (default from config, 'tiny' fallback)",
+    )
+    parser.add_argument(
+        "--pretrained-weight", type=Path, default=None,
+        help="path to pretrained weight (required for --arch crnn_pretrained)",
+    )
+    parser.add_argument(
+        "--patience", type=int, default=None,
+        help="override early_stopping_patience (default from config)",
+    )
     args = parser.parse_args(argv)
 
     if not args.config.exists():
@@ -389,6 +442,12 @@ def main(argv: list[str] | None = None) -> int:
         cfg["train"]["epochs"] = args.epochs
     if args.batch_size is not None:
         cfg["train"]["batch_size"] = args.batch_size
+    if args.arch is not None:
+        cfg.setdefault("model", {})["arch"] = args.arch
+    if args.pretrained_weight is not None:
+        cfg.setdefault("model", {})["pretrained_weight"] = str(args.pretrained_weight)
+    if args.patience is not None:
+        cfg.setdefault("train", {})["early_stopping_patience"] = args.patience
 
     output_dir = args.output_dir or Path(cfg["output"]["runs_dir"]) / time.strftime("%Y%m%d-%H%M%S")
     output_dir.mkdir(parents=True, exist_ok=True)
