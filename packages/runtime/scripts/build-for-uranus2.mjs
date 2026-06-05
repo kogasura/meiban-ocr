@@ -231,25 +231,38 @@ function writeInstallGuide(backends) {
 2. URANUS2 ビルド時に \`assets/meiban-ocr/runtime/index.js\` を import
 3. backend を指定して MeibanOCR.create() を呼ぶ (どちらかを選ぶ or A/B)
 
-### 例: Custom backend (reticle = 枠に1枚を収めて読む。 高精度・軽量)
+### 例: Custom backend(フルフレーム走査 = ハイブリッド: paddle det + custom rec)【推奨】
+
+カメラのフルフレーム(複数銘板)をそのまま渡す運用。paddle det で検出 → custom CRNN で認識する。
+(paddle det はシリアル領域を 100% カバー。custom rec は軽量 + Ericsson regex で誤発火を抑える。
+paddle rec 単体は辞書6623で重く ~10s かかるため非推奨。)
 
 \`\`\`tsx
-import { MeibanOCR } from '@assets/meiban-ocr/runtime';
+import { MeibanOCR, createPaddleDetDetector } from '@assets/meiban-ocr/runtime';
+
+// paddle det を DetectorFn 化(同梱の ppocrv4_det を使う)
+const detector = await createPaddleDetDetector({
+  detModelUrl: '/assets/meiban-ocr/model/paddle/ppocrv4_det.onnx',
+  executionProviders: ['webgpu', 'wasm'],
+});
 
 const ocr = await MeibanOCR.create({
   backend: 'custom',
   modelUrl: '${customUrl}',
   vendor: 'ericsson',
-  // reticle は「枠 = 画像全体に1枚」なので検出器を使わず full-frame で認識器へ直接渡す。
-  // (sliding-window はタイトな reticle crop で窓を surface できず [] を返すため不可)
-  detector: (img) => [[0, 0, img.width, img.height]],
-  prefilter: false,   // sliding-window 前提の前処理を無効化
+  detector,            // ★ paddle det 検出 → custom CRNN 認識(ハイブリッド)
+  prefilter: false,    // paddle det の box をそのまま使う
   recenter: false,
   minConfidence: 0.5,
-  executionProviders: ['webgpu', 'wasm'],
+  executionProviders: ['webgpu', 'wasm'],   // custom モデルは fp32(WebGPU/WASM 両対応)
 });
 
-const results = await ocr.recognize(videoFrame);
+const results = await ocr.recognize(cameraFullFrame);
+\`\`\`
+
+> reticle(ユーザーが1枚を枠に収める)UX の場合のみ、 detector を full-frame
+> \`(img) => [[0, 0, img.width, img.height]]\` にし、 アプリ側で reticle 枠内だけを crop して渡す。
+> ※ カメラのフルフレームを full-frame detector に渡すと全景が潰れて不発火するので注意。
 \`\`\`
 
 ### 例: Paddle backend (PP-OCRv4、 訓練不要、 大きめ)
