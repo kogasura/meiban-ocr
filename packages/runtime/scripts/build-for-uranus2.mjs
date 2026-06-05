@@ -125,18 +125,26 @@ function copyCustomModel() {
   const srcName = src.split('/').pop();
   const isCrnn = /real-v\d+-crnn\.onnx$/.test(srcName) || srcName === 'meiban-ocr-v1.onnx';
   const dstName = isCrnn ? 'meiban-ocr-crnn.onnx' : 'meiban-ocr-fixed-head.onnx';
+  // Why fp32: final(.onnx)は fp16。iOS Safari の WebGPU は shader-f16 未対応のことが多く、
+  // さらに onnxruntime-web の WebGPU EP が未対応op(例 LSTM)を wasm に op単位フォールバックする際
+  // fp16 は実行時クラッシュする(実機で custom 不発火・paddle fp32 は発火、で確認)。
+  // fp32 は WebGPU で paddle 同様に動くため、custom も fp32 を配信する。fp32 兄弟があればそれを使う。
+  const fp32Sibling = src.replace(/\.onnx$/, '.fp32.onnx');
+  const actualSrc = existsSync(fp32Sibling) ? fp32Sibling : src;
   const dst = resolve(outDir, 'model', 'custom', dstName);
-  copyFileSync(src, dst);
+  copyFileSync(actualSrc, dst);
   const size = statSync(dst).size;
   const hash = fileSha256(dst);
-  log(`copied custom model: ${src} → ${dst} (${(size / 1024).toFixed(1)} KB, sha256=${hash.slice(0, 16)}…)`);
+  const prec = actualSrc.endsWith('.fp32.onnx') ? 'fp32' : 'fp16';
+  log(`copied custom model: ${actualSrc} → ${dst} (${(size / 1024).toFixed(1)} KB, ${prec}, sha256=${hash.slice(0, 16)}…)`);
   return {
     type: 'custom',
     name: dstName,
-    source: src.split('/').pop(),  // 元ファイル名を manifest に記録
+    source: actualSrc.split('/').pop(),  // 実配信元(fp32)を manifest に記録
     relpath: `model/custom/${dstName}`,
     size,
     hash,
+    precision: prec,
     format: isCrnn ? 'crnn-ctc' : 'fixed-head-12pos',
   };
 }
