@@ -94,6 +94,9 @@ def export_onnx(
             "logits": {0: "batch"},
         },
         do_constant_folding=True,
+        # torch 2.9 で既定が dynamo=True(onnxscript 必須)に変わったため、
+        # 依存追加を避けてレガシー TorchScript 出力器を明示(v1〜v8 と同経路)。
+        dynamo=False,
     )
     print(
         f"[export] wrote {output_path} ({output_path.stat().st_size / 1024:.1f} KB)",

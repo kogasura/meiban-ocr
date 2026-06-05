@@ -20,6 +20,8 @@ FIXED_LENGTH: int = 16
 
 # 入力サイズ (CRNN)
 INPUT_HEIGHT: int = 32
+# 2026-06-05: 幅160実験は pos11 改善せず(EM 91.0→91.2 誤差) → 128 に戻した。
+# pos11 は解像度(cramping)ではなく CTC末尾の弱さ/crop右端の切れが原因の公算。
 INPUT_WIDTH: int = 128
 
 # 正規化 (グレースケール、[0,1] → mean/std で標準化)

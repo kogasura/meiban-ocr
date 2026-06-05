@@ -175,15 +175,21 @@ def train_loop(cfg: dict, output_dir: Path) -> dict:
         confidence_threshold = float(confidence_threshold)
     neg_ratio_schedule = cfg["train"].get("neg_ratio_schedule") or []
     val_vendor = cfg.get("data", {}).get("vendor", "ericsson")
+    # labels_filename: serial-disjoint split(labels_serial_split.tsv)を使う場合に指定。
+    # 未指定なら従来の labels.tsv。
+    labels_filename = cfg.get("data", {}).get("labels_filename", "labels.tsv")
 
     train_ds = RecognitionDataset(
         data_root, "train", tokenizer, build_train_transform(),
+        labels_filename=labels_filename,
     )
     val_ds = RecognitionDataset(
         data_root, "val", tokenizer, build_eval_transform(),
+        labels_filename=labels_filename,
     )
     test_ds = RecognitionDataset(
         data_root, "test", tokenizer, build_eval_transform(),
+        labels_filename=labels_filename,
     )
 
     eval_collate = partial(ctc_collate, tokenizer=tokenizer)

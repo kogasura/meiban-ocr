@@ -106,6 +106,7 @@ def crop_positive(
     image: Image.Image,
     region: Region,
     margin_px: int = 4,
+    right_margin_px: int | None = None,
 ) -> Image.Image:
     """positive: text_bbox を少しだけ padding してクロップ (CRNN 1行テキスト認識用)。
 
@@ -114,14 +115,19 @@ def crop_positive(
     には RRU 22F3 / シリアル / 日付 / 会社名 の4行が見える)。
     text_bbox は serial だけを囲んでおり、CRNN のトレーニング・推論の両方に整合する。
     text_bbox が無ければ bbox にフォールバック。
+
+    right_margin_px: 右側だけ別マージン (None なら margin_px と同じ)。
+        pos11=末尾桁の「右端で切れる」仮説検証用。text_bbox が最終桁にタイトな場合に
+        右余白を足して最終桁を確実に含める。
     """
     bbox = region.text_bbox if region.text_bbox is not None else region.bbox
     x1, y1, x2, y2 = bbox
     w, h = image.size
+    rm = margin_px if right_margin_px is None else right_margin_px
     return image.crop((
         max(0, x1 - margin_px),
         max(0, y1 - margin_px),
-        min(w, x2 + margin_px),
+        min(w, x2 + rm),
         min(h, y2 + margin_px),
     ))
 
@@ -146,6 +152,7 @@ def extract_crops(
     split_map: dict[str, set[str]] | None = None,
     require_verified: bool = True,
     default_split: str | None = None,
+    pos_right_margin_ratio: float = 0.0,
 ) -> dict[str, int]:
     """Stage 1 → Stage 2 変換のメインルーチン。
 
@@ -196,7 +203,12 @@ def extract_crops(
                 continue
 
             if region.category == "positive":
-                crop = crop_positive(image, region)
+                # 右マージン: text_bbox 高さ × ratio(最終桁の切れ対策)。0 なら従来の 4px。
+                rm = None
+                if pos_right_margin_ratio > 0:
+                    pb = region.text_bbox if region.text_bbox is not None else region.bbox
+                    rm = max(4, round((pb[3] - pb[1]) * pos_right_margin_ratio))
+                crop = crop_positive(image, region, right_margin_px=rm)
                 subdir = POSITIVE_SUBDIR
                 subkind = ""
                 conf = region.confidence if region.confidence is not None else 1.0
@@ -278,6 +290,10 @@ def main(argv: list[str] | None = None) -> int:
         "--default-split", type=str, default=None, choices=(*VALID_SPLITS, "none"),
         help="split-map に無い画像の振り分け先 (default: skip)",
     )
+    parser.add_argument(
+        "--pos-right-margin-ratio", type=float, default=0.0,
+        help="positive crop の右マージンを text_bbox 高さ×この比率にする(末尾桁の切れ対策、0で従来4px)",
+    )
     args = parser.parse_args(argv)
 
     if not args.samples_dir.is_dir():
@@ -302,6 +318,7 @@ def main(argv: list[str] | None = None) -> int:
         split_map=split_map,
         require_verified=not args.include_unverified,
         default_split=default_split,
+        pos_right_margin_ratio=args.pos_right_margin_ratio,
     )
     print(f"[extract_crops] done. counts: {counts}", file=sys.stderr)
     return 0

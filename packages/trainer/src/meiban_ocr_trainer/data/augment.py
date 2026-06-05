@@ -37,19 +37,20 @@ from meiban_ocr_trainer.constants import (
 
 
 def build_train_transform() -> A.Compose:
-    """v1 augmentation (2026-06-01 v3 から復帰)。
+    """v1.1 augmentation (2026-06-05: 回転のみ surgical 拡張)。
 
-    - 幾何変形は控えめ: 回転 ±2°、scale 0.92-1.08、translate なし
-      → fixed-head の位置固定契約を保つ
-    - 質感劣化系は厚め: 撮影品質のバリエーション (圧縮・ノイズ・ブラー) を学習
+    背景: clean held-out 実測で「8°回転で EM 99→40%」と回転耐性ゼロ、Q4(傾いた crop)EM 17%
+    が最大ギャップと判明。CTC CRNN は位置不変なので回転を広げて安全。
+    v4(±12°+異方性scale+translate)は net 悪化したため、**回転のみ ±10°** に絞る
+    (scale/shear/perspective/質感系は v1 のまま=変数を回転だけに限定)。
     """
     return A.Compose([
-        # 幾何: 控えめ (translate なし、scale 微小、 fixed-head の位置契約を守る)
+        # 幾何: 回転のみ ±10° に拡張(他は v1 据え置き=回転効果を分離)
         A.Affine(
-            rotate=(-2, 2),
+            rotate=(-10, 10),
             scale=(0.92, 1.08),
             shear=(-2, 2),
-            p=0.4,
+            p=0.5,
             mode=0,  # cv2.BORDER_CONSTANT (= 0 padding)
         ),
         A.Perspective(scale=(0.01, 0.05), p=0.3),
