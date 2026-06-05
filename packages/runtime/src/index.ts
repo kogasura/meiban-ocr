@@ -26,3 +26,7 @@ export {
   createSlidingWindowDetector,
   type SlidingWindowOptions,
 } from './detectors/sliding-window';
+export {
+  createPaddleDetDetector,
+  type PaddleDetDetectorOptions,
+} from './detectors/paddle-det';
