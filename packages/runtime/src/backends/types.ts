@@ -111,6 +111,16 @@ export interface PaddleBackendInit extends CommonBackendOptions {
    * 検出 bbox の最低サイズ (短辺 px)。 default 3。
    */
   detMinBoxSize?: number;
+  /**
+   * rec 推論に渡す bbox の上限 (面積上位 top-K)。 default 8。
+   *
+   * Why: PP-OCRv4 det は汎用テキスト検出器のため、銘板の複数行＋背景の文字様パターンを
+   * 大量に検出し、B(バッチ数)が膨らむと「rec 推論 + box毎JS前処理 + [B×T×6625]CTCデコード」
+   * がメインスレッドを長時間占有して UI がフリーズする (custom backend は full-frame で B=1
+   * なので無関係)。銘板スキャナは主要テキスト領域だけ読めれば十分なので、面積上位 K 件に絞り
+   * メインスレッド負荷を桁で下げる。0 以下なら無制限 (従来挙動)。
+   */
+  maxRecBoxes?: number;
 }
 
 /**

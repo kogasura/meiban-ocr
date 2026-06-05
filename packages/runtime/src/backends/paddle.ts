@@ -47,6 +47,7 @@ export class PaddleBackend implements Backend {
   private readonly detLongSide: number;
   private readonly detBinaryThreshold: number;
   private readonly detMinBoxSize: number;
+  private readonly maxRecBoxes: number;
 
   private constructor(
     detSession: ort.InferenceSession,
@@ -63,6 +64,7 @@ export class PaddleBackend implements Backend {
     this.detLongSide = options.detLongSide ?? 736;
     this.detBinaryThreshold = options.detBinaryThreshold ?? 0.3;
     this.detMinBoxSize = options.detMinBoxSize ?? 3;
+    this.maxRecBoxes = options.maxRecBoxes ?? 8;
   }
 
   static async create(options: PaddleBackendInit = {}): Promise<PaddleBackend> {
@@ -137,8 +139,18 @@ export class PaddleBackend implements Backend {
 
     if (bboxes.length === 0) return [];
 
+    // 2.5 box 氾濫対策: 面積上位 top-K に制限してメインスレッド負荷(rec推論+box毎前処理
+    //     +[B×T×6625]CTCデコード)を抑える。汎用 det が背景の文字様パターンを大量検出して
+    //     B が膨らむと UI がフリーズするため。maxRecBoxes<=0 なら無制限(従来挙動)。
+    let recBoxes = bboxes;
+    if (this.maxRecBoxes > 0 && bboxes.length > this.maxRecBoxes) {
+      recBoxes = [...bboxes]
+        .sort((a, b) => (b[2] - b[0]) * (b[3] - b[1]) - (a[2] - a[0]) * (a[3] - a[1]))
+        .slice(0, this.maxRecBoxes);
+    }
+
     // 3. Recognition 前処理 + 推論 (batch)
-    const recInput = preprocessForRecBatch(imageData, bboxes);
+    const recInput = preprocessForRecBatch(imageData, recBoxes);
     const recInputName = this.recSession.inputNames[0]!;
     const recOutputName = this.recSession.outputNames[0]!;
     const recTensor = new ort.Tensor(
@@ -171,7 +183,7 @@ export class PaddleBackend implements Backend {
       results.push({
         text: corr.text,
         confidence: round(confidence, 4),
-        bbox: bboxes[i]!,
+        bbox: recBoxes[i]!,
       });
     }
 
