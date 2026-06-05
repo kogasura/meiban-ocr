@@ -194,8 +194,16 @@ function writeManifest(backends) {
 }
 
 function writeInstallGuide(backends) {
-  const hasCustom = backends.some(b => b && b.type === 'custom');
+  const custom = backends.find(b => b && b.type === 'custom');
+  const hasCustom = !!custom;
   const hasPaddle = backends.some(b => b && b.type === 'paddle');
+  // custom モデルの実ファイル名/サイズ/format は build 時に決まる(crnn か fixed-head か)。
+  // INSTALL の例が実態とズレないよう、 ここから動的に埋める。
+  const customUrl = custom
+    ? `/assets/meiban-ocr/${custom.relpath}`
+    : '/assets/meiban-ocr/model/custom/meiban-ocr-crnn.onnx';
+  const customSizeMB = custom ? (custom.size / 1024 / 1024).toFixed(1) : '?';
+  const customFmt = custom ? custom.format : 'crnn-ctc';
   const md = `# URANUS2 への統合手順
 
 このディレクトリ (\`dist-uranus2/\`) は **meiban-ocr の URANUS2 統合用ローカル成果物** です。
@@ -204,7 +212,7 @@ function writeInstallGuide(backends) {
 ## 中身
 
 - \`runtime/\` — Vite build 済の TypeScript bundle (\`index.js\` + \`index.d.ts\`)
-- \`model/custom/\` — 自作 12-head OCR モデル (~580 KB)${hasCustom ? '' : ' ← **未同梱** (models/meiban-ocr-v2-fh.onnx が無いため)'}
+- \`model/custom/\` — 自作 OCR モデル (${customSizeMB} MB, ${customFmt})${hasCustom ? '' : ' ← **未同梱** (models/ に custom ONNX が無いため)'}
 - \`model/paddle/\` — PaddleOCR PP-OCRv4 mobile (det + rec、 ~15 MB)${hasPaddle ? '' : ' ← **未同梱** (models/ppocrv4_*.onnx が無いため)'}
 - \`manifest.json\` — backend ごとのバージョン / ハッシュ / モデルメタ
 - \`INSTALL.md\` — このファイル
@@ -215,16 +223,22 @@ function writeInstallGuide(backends) {
 2. URANUS2 ビルド時に \`assets/meiban-ocr/runtime/index.js\` を import
 3. backend を指定して MeibanOCR.create() を呼ぶ (どちらかを選ぶ or A/B)
 
-### 例: Custom backend (自作 12-head、 軽量、 訓練要)
+### 例: Custom backend (reticle = 枠に1枚を収めて読む。 高精度・軽量)
 
 \`\`\`tsx
 import { MeibanOCR } from '@assets/meiban-ocr/runtime';
 
 const ocr = await MeibanOCR.create({
   backend: 'custom',
-  modelUrl: '/assets/meiban-ocr/model/custom/meiban-ocr-fixed-head.onnx',
+  modelUrl: '${customUrl}',
+  vendor: 'ericsson',
+  // reticle は「枠 = 画像全体に1枚」なので検出器を使わず full-frame で認識器へ直接渡す。
+  // (sliding-window はタイトな reticle crop で窓を surface できず [] を返すため不可)
+  detector: (img) => [[0, 0, img.width, img.height]],
+  prefilter: false,   // sliding-window 前提の前処理を無効化
+  recenter: false,
+  minConfidence: 0.5,
   executionProviders: ['webgpu', 'wasm'],
-  minConfidence: 0.7,
 });
 
 const results = await ocr.recognize(videoFrame);
@@ -239,6 +253,10 @@ const ocr = await MeibanOCR.create({
   recModelUrl: '/assets/meiban-ocr/model/paddle/ppocrv4_rec.onnx',
   executionProviders: ['webgpu', 'wasm'],
   minConfidence: 0.5,
+  // 汎用 det が背景の文字様パターンを大量検出すると B(rec バッチ)が膨らみ、 メインスレッド
+  // (rec 推論 + box毎前処理 + 大きな CTC デコード)を占有して UI がフリーズする。 銘板スキャナは
+  // 主要テキスト領域だけ読めれば十分なので、 rec に渡す box を面積上位 K 件に制限する。
+  maxRecBoxes: 4,
 });
 
 const results = await ocr.recognize(videoFrame);
