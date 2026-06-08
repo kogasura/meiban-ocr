@@ -1,0 +1,55 @@
+# fixed_head_reject_v1.yaml
+# reject(∅)能力付き 12-head fixed-length 再訓練。
+#
+# 目的: ハイブリッド(paddle det 検出 → custom rec 認識)の誤発火を根治する。
+# 現行 custom(37クラスCTC)は reject 機構が無く、paddle det が拾う非シリアル領域
+# (型番/製造番号ラベル/製造年月/会社名/反射/グレア)に対しても Ericsson 形式の
+# シリアルを捏造する。12-head は「全position ∅」で構造的に reject できる。
+#
+# データ: 非シリアル negative を強化済み。
+#   - mined : paddle det を samples に回し positive と重ならない box を採掘 (subkind=mined)
+#             → tools/mine_nonserial_negatives.py
+#   - synth : Ericsson regex 非一致のランダム英数字 + 背景 (subkind=other_text/background)
+#             → data/synth_negative.py
+#   - background : 既存 annotation negative
+# これで「非シリアルの“文字”を ∅ で拒否」を学習する(従来は background のみで未学習)。
+#
+# 起動 (ユーザーGPU環境):
+#   python -m meiban_ocr_trainer.train_fixed_head --config configs/fixed_head_reject_v1.yaml --use-rnn
+# グリッド比較: --use-rnn の on/off、empty_class_weight 2.5/3.0 を振る。
+
+data:
+  root: data/recognition       # train_fixed_head は既定 labels.tsv を split 列で読む
+  vendor: ericsson
+
+model:
+  rnn_hidden: 128              # FixedHeadOCR が参照 (use_rnn は CLI --use-rnn)
+  dropout: 0.1
+
+train:
+  batch_size: 64
+  epochs: 80
+  lr_backbone: 0.0001
+  lr_head: 0.001
+  weight_decay: 0.0001
+  num_workers: 4
+  freeze_backbone_epochs: 2
+  early_stopping_patience: 30
+  # 負例カリキュラム: warmup は positive のみ → 段階的に negative を 0.4 まで導入
+  neg_ratio_schedule:
+    - {epoch: 1,  ratio: 0.0}
+    - {epoch: 5,  ratio: 0.0}
+    - {epoch: 15, ratio: 0.30}
+    - {epoch: 40, ratio: 0.40}
+  confidence_threshold: 0.7
+  # ∅ class を CE loss で重み付け(「ゴミを吐く」より「∅を選ぶ」方向)。
+  # 旧 v2-fh は 3.0 で reject 完璧だが positive CER 0.222 と高め。過剰拒否で本物シリアルの
+  # 認識精度が落ちるリスクがあるため 2.5 を主、3.0 をグリッド比較。
+  empty_class_weight: 2.5
+
+runtime:
+  device: cuda
+  seed: 42
+
+output:
+  runs_dir: runs
