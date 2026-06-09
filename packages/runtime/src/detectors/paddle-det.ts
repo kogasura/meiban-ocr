@@ -32,7 +32,8 @@ export interface PaddleDetDetectorOptions {
   detModelBytes?: Uint8Array | ArrayBuffer;
   /** 実行プロバイダ。 default ['webgpu', 'wasm']。 */
   executionProviders?: Array<'webgpu' | 'wasm' | 'webgl'>;
-  /** det 入力の長辺リサイズ。 小さいほど速いが recall 低下。 default 736。 */
+  /** det 入力の長辺リサイズ。 小さいほど速いが recall 低下。 default 960
+   * (E2E実測で 736→960 は検出カバー62→89%/e2e 21.8→37.7%。tools/eval_end_to_end.py)。 */
   detLongSide?: number;
   /** DB 二値化閾値。 default 0.3。 */
   binaryThreshold?: number;
@@ -59,7 +60,7 @@ export async function createPaddleDetDetector(
     { executionProviders: eps, graphOptimizationLevel: 'all' },
     'detModelUrl',
   );
-  const detLongSide = options.detLongSide ?? 736;
+  const detLongSide = options.detLongSide ?? 960;
   const binaryThreshold = options.binaryThreshold ?? 0.3;
   const minBoxSize = options.minBoxSize ?? 3;
   const inputName = session.inputNames[0]!;

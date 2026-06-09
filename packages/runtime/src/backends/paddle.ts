@@ -2,7 +2,7 @@
  * Paddle Backend — PP-OCRv4 mobile を使った OCR 実装。
  *
  * 処理フロー:
- *   image → resize (long side ≤ 736) → PP-OCRv4 det ONNX
+ *   image → resize (long side ≤ 960) → PP-OCRv4 det ONNX
  *        → segmentation map → DB postprocess → bbox 配列
  *        → 各 bbox を rec 入力 (48×320 RGB) に正規化
  *        → PP-OCRv4 rec ONNX → CTC logits
@@ -61,7 +61,7 @@ export class PaddleBackend implements Backend {
     this.dict = dict;
     this.vendor = vendor;
     this.minConfidence = options.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
-    this.detLongSide = options.detLongSide ?? 736;
+    this.detLongSide = options.detLongSide ?? 960;  // E2E実測で 736→960 が検出カバー62→89%/e2e 2倍
     this.detBinaryThreshold = options.detBinaryThreshold ?? 0.3;
     this.detMinBoxSize = options.detMinBoxSize ?? 3;
     this.maxRecBoxes = options.maxRecBoxes ?? 8;

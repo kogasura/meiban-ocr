@@ -4,7 +4,7 @@
  * Detection 用 と Recognition 用の 2 種類が必要:
  *
  * **Detection (det)**:
- *   - 入力画像をアスペクト保持で long side ≤ limit_side_len (default 736) にリサイズ
+ *   - 入力画像をアスペクト保持で long side ≤ limit_side_len (default 960) にリサイズ
  *   - 高さ・幅は 32 の倍数に揃える (model stride 制約)
  *   - RGB → (pixel/255 - mean) / std (mean=std=[0.5,0.5,0.5])
  *   - CHW float32 にレイアウト
@@ -16,7 +16,11 @@
  *   - 同じ正規化 + CHW
  */
 
-const DET_DEFAULT_LIMIT = 736;
+// E2E実測(serial-disjoint held-out, tools/eval_end_to_end.py)で 736→960 で検出カバー
+// 62→89%、e2e EM 21.8→37.7% と判明したため既定を 960 に引き上げ(2026-06-09)。
+// 小シリアル(<35px)が 736 のダウンスケールで検出マップから消えるのが主因。det推論コスト
+// は +24%(長辺^2)で KGI ≤300ms/frame に収まる。1280 は 4.7× で過剰。detLongSide で上書き可。
+const DET_DEFAULT_LIMIT = 960;
 const REC_TARGET_H = 48;
 const REC_MAX_W = 320;
 
