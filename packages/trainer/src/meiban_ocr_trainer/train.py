@@ -178,17 +178,21 @@ def train_loop(cfg: dict, output_dir: Path) -> dict:
     # labels_filename: serial-disjoint split(labels_serial_split.tsv)を使う場合に指定。
     # 未指定なら従来の labels.tsv。
     labels_filename = cfg.get("data", {}).get("labels_filename", "labels.tsv")
+    # resize_mode: 'stretch'(従来=全面引き伸ばし) | 'letterbox'(アスペクト保持+右下0埋め)。
+    # checkpoint の config に保存されるので、評価(eval_recognition)が同一幾何を自動で再現できる。
+    resize_mode = cfg.get("data", {}).get("resize_mode", "stretch")
+    print(f"[train] resize_mode={resize_mode}", file=sys.stderr)
 
     train_ds = RecognitionDataset(
-        data_root, "train", tokenizer, build_train_transform(),
+        data_root, "train", tokenizer, build_train_transform(resize_mode),
         labels_filename=labels_filename,
     )
     val_ds = RecognitionDataset(
-        data_root, "val", tokenizer, build_eval_transform(),
+        data_root, "val", tokenizer, build_eval_transform(resize_mode),
         labels_filename=labels_filename,
     )
     test_ds = RecognitionDataset(
-        data_root, "test", tokenizer, build_eval_transform(),
+        data_root, "test", tokenizer, build_eval_transform(resize_mode),
         labels_filename=labels_filename,
     )
 

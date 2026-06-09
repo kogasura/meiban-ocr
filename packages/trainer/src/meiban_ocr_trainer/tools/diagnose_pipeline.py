@@ -184,8 +184,15 @@ def recenter_bbox(
     return [new_x1, y1, new_x1 + bw, y2]
 
 
-def crop_and_normalize(img_rgb: np.ndarray, bbox: list[int]) -> np.ndarray:
-    """bbox 領域を 32×128 にリサイズ → Rec.709 グレースケール → [-1, 1] 正規化。"""
+def crop_and_normalize(
+    img_rgb: np.ndarray, bbox: list[int], resize_mode: str = "stretch"
+) -> np.ndarray:
+    """bbox 領域を 32×128 にリサイズ → Rec.709 グレースケール → [-1, 1] 正規化。
+
+    resize_mode='letterbox' のときはアスペクト保持+右下0埋め(訓練 augment と同一幾何)。
+    """
+    from meiban_ocr_trainer.data.resize import resize_for_model
+
     x1, y1, x2, y2 = bbox
     h, w = img_rgb.shape[:2]
     # bbox を画像境界に clip (runtime 側は canvas が自動で fill する想定)
@@ -195,7 +202,9 @@ def crop_and_normalize(img_rgb: np.ndarray, bbox: list[int]) -> np.ndarray:
         return np.zeros((INPUT_HEIGHT, INPUT_WIDTH), dtype=np.float32)
     crop = img_rgb[y1c:y2c, x1c:x2c]
     # cv2.resize は (W, H) 順
-    resized = cv2.resize(crop, (INPUT_WIDTH, INPUT_HEIGHT), interpolation=cv2.INTER_AREA)
+    resized = resize_for_model(
+        crop, INPUT_WIDTH, INPUT_HEIGHT, mode=resize_mode, interpolation=cv2.INTER_AREA
+    )
     # Rec.709 luminance
     y = (0.2126 * resized[..., 0]
          + 0.7152 * resized[..., 1]

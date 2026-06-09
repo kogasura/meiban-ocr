@@ -55,8 +55,12 @@ def _lev(a: str, b: str) -> int:
 
 
 # ----- model backends -----
-def load_predictor(model_path: Path):
-    """returns (predict_fn(arrs:list[np.ndarray])->logits(B,T,C), model_type, tokenizer)."""
+def load_predictor(model_path: Path, resize_mode_override: str | None = None):
+    """returns (predict_fn(arrs)->logits(B,T,C), model_type, tokenizer, resize_mode).
+
+    resize_mode は checkpoint の config.data.resize_mode から取得し、評価の前処理を訓練と
+    一致させる(.onnx は config が無いので override か 'stretch')。
+    """
     if model_path.suffix == ".onnx":
         import onnxruntime as ort
         sess = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
@@ -66,13 +70,15 @@ def load_predictor(model_path: Path):
         def predict(arrs):
             x = np.stack(arrs)[:, None, :, :].astype(np.float32)
             return sess.run([outp], {inp: x})[0]
-        return predict, mt, tok
+        return predict, mt, tok, (resize_mode_override or "stretch")
     else:
         import torch
         from meiban_ocr_trainer.models.crnn_pretrained import CRNNPretrained
         dev = "cuda" if torch.cuda.is_available() else "cpu"
         ckpt = torch.load(str(model_path), map_location="cpu", weights_only=False)
-        cfg = ckpt.get("config", {}).get("model", {})
+        full_cfg = ckpt.get("config", {})
+        cfg = full_cfg.get("model", {})
+        resize_mode = resize_mode_override or full_cfg.get("data", {}).get("resize_mode", "stretch")
         model = CRNNPretrained(
             num_classes=int(cfg.get("num_classes", 37)),
             hidden_size=int(cfg.get("crnn_hidden_size", 256)),
@@ -84,7 +90,7 @@ def load_predictor(model_path: Path):
         def predict(arrs):
             x = torch.from_numpy(np.stack(arrs)[:, None, :, :].astype(np.float32)).to(dev)
             return model(x).cpu().numpy()
-        return predict, "ctc", CTCTokenizer()
+        return predict, "ctc", CTCTokenizer(), resize_mode
 
 
 def decode_batch(predict, mt, tok, arrs):
@@ -112,9 +118,10 @@ def _rotate(bgr, deg):
 
 # ----- evaluation -----
 def evaluate(model_path: Path, root: Path, labels_path: Path, split: str,
-             rotations, neg_conf: float, batch: int = 256) -> dict:
+             rotations, neg_conf: float, batch: int = 256,
+             resize_mode_override: str | None = None) -> dict:
     from collections import Counter
-    predict, mt, tok = load_predictor(model_path)
+    predict, mt, tok, resize_mode = load_predictor(model_path, resize_mode_override)
     pos_rows, neg_rows = read_rows(labels_path, split)
 
     # positives: 推論
@@ -157,7 +164,7 @@ def evaluate(model_path: Path, root: Path, labels_path: Path, split: str,
         ar = w / h
         if ar >= 4.5:
             q1_files.append((r["filename"], _norm(r["text"])))
-        buf.append(crop_and_normalize(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), [0, 0, w, h]))
+        buf.append(crop_and_normalize(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), [0, 0, w, h], resize_mode))
         meta.append((_norm(r["text"]), ar))
         if len(buf) >= batch:
             flush()
@@ -175,7 +182,7 @@ def evaluate(model_path: Path, root: Path, labels_path: Path, split: str,
             if img is None:
                 continue
             b = _rotate(img, deg) if deg else img
-            rb.append(crop_and_normalize(cv2.cvtColor(b, cv2.COLOR_BGR2RGB), [0, 0, b.shape[1], b.shape[0]]))
+            rb.append(crop_and_normalize(cv2.cvtColor(b, cv2.COLOR_BGR2RGB), [0, 0, b.shape[1], b.shape[0]], resize_mode))
             rg.append(gt)
             if len(rb) >= batch:
                 for (t, _), g in zip(decode_batch(predict, mt, tok, rb), rg):
@@ -193,7 +200,7 @@ def evaluate(model_path: Path, root: Path, labels_path: Path, split: str,
         img = cv2.imread(str(root / r["filename"]))
         if img is None:
             continue
-        nb.append(crop_and_normalize(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), [0, 0, img.shape[1], img.shape[0]]))
+        nb.append(crop_and_normalize(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), [0, 0, img.shape[1], img.shape[0]], resize_mode))
         if len(nb) >= batch:
             for t, c in decode_batch(predict, mt, tok, nb):
                 nseen += 1
@@ -208,6 +215,7 @@ def evaluate(model_path: Path, root: Path, labels_path: Path, split: str,
 
     return {
         "model": str(model_path), "labels": str(labels_path), "split": split,
+        "resize_mode": resize_mode,
         "n_pos": tot, "n_neg": nseen,
         "EM": round(em / tot * 100, 2) if tot else 0,
         "CER": round(cer_num / cer_den * 100, 3) if cer_den else 0,
@@ -226,7 +234,7 @@ def evaluate(model_path: Path, root: Path, labels_path: Path, split: str,
 def _print(res: dict):
     print(f"\n=== {Path(res['model']).parent.name}/{Path(res['model']).name}  "
           f"[{Path(res['labels']).name}:{res['split']}] ===")
-    print(f"  n_pos={res['n_pos']} n_neg={res['n_neg']}")
+    print(f"  n_pos={res['n_pos']} n_neg={res['n_neg']} resize_mode={res.get('resize_mode')}")
     print(f"  EM={res['EM']}%  CER={res['CER']}%  5→6={res['n_5to6']}  neg誤発火={res['neg_fire_rate']}%")
     print(f"  conf median 正解={res['conf_correct_median']} 誤={res['conf_wrong_median']}")
     print(f"  アスペクト別EM={res['aspect_EM']}")
@@ -244,6 +252,8 @@ def main(argv=None) -> int:
     p.add_argument("--split", type=str, default="test")
     p.add_argument("--rotations", type=str, default="0,8,15")
     p.add_argument("--neg-conf-threshold", type=float, default=0.5)
+    p.add_argument("--resize-mode", type=str, default=None, choices=("stretch", "letterbox"),
+                   help="前処理リサイズを上書き(既定は checkpoint config の data.resize_mode)")
     p.add_argument("--compare-leaky", action="store_true",
                    help="リーク版 labels.tsv の同 split とも並記")
     p.add_argument("--json", type=Path, default=None)
@@ -256,12 +266,14 @@ def main(argv=None) -> int:
 
     results = []
     for m in models:
-        r = evaluate(m, args.root, args.labels, args.split, rotations, args.neg_conf_threshold)
+        r = evaluate(m, args.root, args.labels, args.split, rotations, args.neg_conf_threshold,
+                     resize_mode_override=args.resize_mode)
         _print(r); results.append(r)
         if args.compare_leaky:
             leaky = args.root / "labels.tsv"
             if leaky.exists():
-                rl = evaluate(m, args.root, leaky, args.split, rotations, args.neg_conf_threshold)
+                rl = evaluate(m, args.root, leaky, args.split, rotations, args.neg_conf_threshold,
+                              resize_mode_override=args.resize_mode)
                 rl["note"] = "LEAKY(参考)"
                 _print(rl); results.append(rl)
                 print(f"  >>> clean EM={r['EM']}% vs leaky EM={rl['EM']}%  差={r['EM']-rl['EM']:+.1f}")

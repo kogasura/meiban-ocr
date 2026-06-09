@@ -25,6 +25,7 @@ Why v1 specs are conservative:
 from __future__ import annotations
 
 import albumentations as A
+import cv2
 import numpy as np
 import torch
 
@@ -34,9 +35,28 @@ from meiban_ocr_trainer.constants import (
     NORM_MEAN,
     NORM_STD,
 )
+from meiban_ocr_trainer.data.resize import letterbox_resize
 
 
-def build_train_transform() -> A.Compose:
+def _letterbox_apply(img: np.ndarray, **kwargs) -> np.ndarray:
+    """A.Lambda 用の picklable な letterbox 適用関数(num_workers>0 で必須=lambda不可)。"""
+    return letterbox_resize(
+        img, INPUT_WIDTH, INPUT_HEIGHT, pad_value=0, interpolation=cv2.INTER_LINEAR,
+    )
+
+
+def _resize_transform(resize_mode: str) -> A.BasicTransform:
+    """最終リサイズ。'stretch'=従来 A.Resize、'letterbox'=アスペクト保持+右下0埋め。
+
+    letterbox は訓練/評価/runtime で同一幾何にする必要があるため、共有 letterbox_resize を
+    A.Lambda 経由で呼ぶ(評価側 crop_and_normalize も同じ関数を使う)。
+    """
+    if resize_mode == "letterbox":
+        return A.Lambda(image=_letterbox_apply, name="letterbox")
+    return A.Resize(height=INPUT_HEIGHT, width=INPUT_WIDTH, interpolation=1)
+
+
+def build_train_transform(resize_mode: str = "stretch") -> A.Compose:
     """v1.1 augmentation (2026-06-05: 回転のみ surgical 拡張)。
 
     背景: clean held-out 実測で「8°回転で EM 99→40%」と回転耐性ゼロ、Q4(傾いた crop)EM 17%
@@ -81,14 +101,14 @@ def build_train_transform() -> A.Compose:
             p=0.3,
         ),
 
-        A.Resize(height=INPUT_HEIGHT, width=INPUT_WIDTH, interpolation=1),
+        _resize_transform(resize_mode),
     ])
 
 
-def build_eval_transform() -> A.Compose:
+def build_eval_transform(resize_mode: str = "stretch") -> A.Compose:
     """評価時 transform: resize のみ。"""
     return A.Compose([
-        A.Resize(height=INPUT_HEIGHT, width=INPUT_WIDTH, interpolation=1),
+        _resize_transform(resize_mode),
     ])
 
 
