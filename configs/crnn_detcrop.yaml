@@ -1,0 +1,40 @@
+# det-box 由来 crop で CRNN 再訓練(訓練/推論の crop 分布ミスマッチ対策)。
+# 訓練 crop を人手 text_bbox でなく paddle det box(detLongSide=960)から生成した
+# data/recognition_detcrop を使い、推論で来る crop 幾何で認識器を学習させる。
+# resize_mode=stretch(letterbox は A/B で棄却済)。比較 = runs/cr_pad_stretch(人手crop, E2E rec|cov 42%)。
+data:
+  root: data/recognition_detcrop
+  vendor: ericsson
+  labels_filename: labels.tsv          # build_detbox_crops が split 列込みで出力(serial-disjoint)
+  resize_mode: stretch
+model:
+  num_classes: 37
+  rnn_hidden: 128
+  rnn_layers: 2
+  dropout: 0.1
+  arch: crnn_pretrained
+  pretrained_weight: models/pretrained/clovaai-crnn-vgg.pth
+train:
+  batch_size: 64
+  epochs: 100
+  lr_backbone: 0.0001
+  lr_head: 0.001
+  weight_decay: 0.0001
+  num_workers: 4
+  freeze_backbone_epochs: 2
+  early_stopping_patience: 30
+  neg_ratio_schedule:
+  - epoch: 1
+    ratio: 0.0
+  - epoch: 5
+    ratio: 0.0
+  - epoch: 15
+    ratio: 0.3
+  - epoch: 40
+    ratio: 0.4
+  confidence_threshold: 0.7
+runtime:
+  device: cuda
+  seed: 42
+output:
+  runs_dir: runs
