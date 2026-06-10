@@ -1,0 +1,38 @@
+# グリフ移植水増し実験: cr_pad_stretch と1変数(labels=replaced水増し)だけ差をつける。
+# 仮説: 末尾桁誤読(本番誤読の95%=pos10/11)はデータ枯渇 → 移植で多様化すれば減る。
+data:
+  root: data/recognition_pad
+  vendor: ericsson
+  labels_filename: labels_serial_split_replaced.tsv  # serial-disjoint + グリフ移植水増し(末尾桁多様化)
+  resize_mode: stretch
+model:
+  num_classes: 37
+  rnn_hidden: 128
+  rnn_layers: 2
+  dropout: 0.1
+  arch: crnn_pretrained
+  pretrained_weight: models/pretrained/clovaai-crnn-vgg.pth
+train:
+  batch_size: 64
+  epochs: 100
+  lr_backbone: 0.0001
+  lr_head: 0.001
+  weight_decay: 0.0001
+  num_workers: 4
+  freeze_backbone_epochs: 2
+  early_stopping_patience: 30
+  neg_ratio_schedule:
+  - epoch: 1
+    ratio: 0.0
+  - epoch: 5
+    ratio: 0.0
+  - epoch: 15
+    ratio: 0.3
+  - epoch: 40
+    ratio: 0.4
+  confidence_threshold: 0.7
+runtime:
+  device: cuda
+  seed: 42
+output:
+  runs_dir: runs
