@@ -17,6 +17,7 @@
  */
 
 import { INPUT_HEIGHT, INPUT_WIDTH, NORM_MEAN, NORM_STD } from './constants';
+import { detBoxBBox, detBoxQuad, type DetBox } from './detectors/types';
 
 export type ImageInput =
   | HTMLCanvasElement
@@ -206,7 +207,16 @@ export function cropAndNormalize(
   // putImageData は dirty rect で部分コピー可能
   tctx.putImageData(src, -x1, -y1);
 
-  // 2) INPUT_WIDTHxINPUT_HEIGHT にリサイズ
+  return resizeCanvasAndNormalize(tmp);
+}
+
+/**
+ * crop 済み canvas を INPUT_WIDTH×INPUT_HEIGHT にリサイズし、
+ * グレースケール (Rec.709) + [-1, 1] 正規化した Float32Array を返す。
+ */
+function resizeCanvasAndNormalize(
+  tmp: HTMLCanvasElement | OffscreenCanvas,
+): Float32Array {
   const resized = makeCanvas(INPUT_WIDTH, INPUT_HEIGHT);
   const rctx = resized.getContext('2d') as
     | CanvasRenderingContext2D
@@ -219,7 +229,7 @@ export function cropAndNormalize(
   rctx.drawImage(tmp as unknown as CanvasImageSource, 0, 0, INPUT_WIDTH, INPUT_HEIGHT);
   const data = rctx.getImageData(0, 0, INPUT_WIDTH, INPUT_HEIGHT).data;
 
-  // 3) RGB → グレースケール (Rec.709 輝度) + 正規化
+  // RGB → グレースケール (Rec.709 輝度) + 正規化
   const out = new Float32Array(INPUT_HEIGHT * INPUT_WIDTH);
   for (let i = 0, j = 0; i < data.length; i += 4, j++) {
     // luminance 線形近似 (Rec.709 係数を Y' に近似)
@@ -233,20 +243,167 @@ export function cropAndNormalize(
 }
 
 /**
- * 複数 bbox をまとめてバッチ用テンソル (N, 1, H, W) に変換。
+ * 回転 quad を透視変換で水平矩形 crop に矯正し、INPUT_WIDTH×INPUT_HEIGHT に
+ * リサイズ + 正規化する (PaddleOCR get_rotate_crop_image 相当)。
+ *
+ * Why: paddle det の quad をそのまま外接矩形 crop すると、傾いたシリアルは crop 内で
+ * 斜めのまま 32×128 に潰れ、訓練分布 (水平タイト crop) から乖離する。E2E 実測で
+ * rect crop 37.7% → quad 矯正 65.9% (tools/eval_end_to_end.py @960 全件)。
+ *
+ * recenter は適用しない (quad が既に text にタイトなため不要)。
+ */
+export function warpQuadAndNormalize(
+  src: ImageData,
+  quad: readonly [
+    readonly [number, number],
+    readonly [number, number],
+    readonly [number, number],
+    readonly [number, number],
+  ],
+): Float32Array {
+  const warped = warpQuadToImage(src, quad);
+  const tmp = makeCanvas(warped.width, warped.height);
+  const tctx = tmp.getContext('2d') as
+    | CanvasRenderingContext2D
+    | OffscreenCanvasRenderingContext2D
+    | null;
+  if (!tctx) throw new Error('Failed to get 2D context for warp canvas');
+  tctx.putImageData(
+    new ImageData(warped.data, warped.width, warped.height),
+    0,
+    0,
+  );
+  return resizeCanvasAndNormalize(tmp);
+}
+
+/**
+ * 透視変換の計算本体 (canvas 非依存・テスト可能)。quad を水平矩形 RGBA に矯正する。
+ * 縦長 (h/w >= 1.5) は 90° 反時計回りに回転して返す。
+ */
+export function warpQuadToImage(
+  src: ImageData,
+  quad: readonly [
+    readonly [number, number],
+    readonly [number, number],
+    readonly [number, number],
+    readonly [number, number],
+  ],
+): { data: Uint8ClampedArray<ArrayBuffer>; width: number; height: number } {
+  const [tl, tr, br, bl] = quad;
+  const dist = (a: readonly [number, number], b: readonly [number, number]) =>
+    Math.hypot(a[0] - b[0], a[1] - b[1]);
+  let w = Math.max(1, Math.round(Math.max(dist(tl, tr), dist(br, bl))));
+  let h = Math.max(1, Math.round(Math.max(dist(tl, bl), dist(tr, br))));
+  // JS per-pixel warp のコスト上限。最終入力は 128×32 なので 1024×256 (8倍) を超える
+  // 解像度は精度に寄与しない。巨大 box (誤検出含む) での暴走を防ぐ。
+  const MAX_W = 1024;
+  const MAX_H = 256;
+  if (w > MAX_W) {
+    h = Math.max(1, Math.round((h * MAX_W) / w));
+    w = MAX_W;
+  }
+  if (h > MAX_H) {
+    w = Math.max(1, Math.round((w * MAX_H) / h));
+    h = MAX_H;
+  }
+
+  // 単位正方形 (u,v) → quad の射影変換係数 (Heckbert)。
+  // (X, Y) = ((a*u + b*v + c) / (g*u + h*v + 1), (d*u + e*v + f) / (g*u + h*v + 1))
+  const sx = tl[0] - tr[0] + br[0] - bl[0];
+  const sy = tl[1] - tr[1] + br[1] - bl[1];
+  let g = 0;
+  let hcoef = 0;
+  if (Math.abs(sx) > 1e-9 || Math.abs(sy) > 1e-9) {
+    const dx1 = tr[0] - br[0];
+    const dx2 = bl[0] - br[0];
+    const dy1 = tr[1] - br[1];
+    const dy2 = bl[1] - br[1];
+    const den = dx1 * dy2 - dx2 * dy1;
+    if (Math.abs(den) > 1e-9) {
+      g = (sx * dy2 - dx2 * sy) / den;
+      hcoef = (dx1 * sy - sx * dy1) / den;
+    }
+  }
+  const a = tr[0] - tl[0] + g * tr[0];
+  const b = bl[0] - tl[0] + hcoef * bl[0];
+  const c = tl[0];
+  const d = tr[1] - tl[1] + g * tr[1];
+  const e = bl[1] - tl[1] + hcoef * bl[1];
+  const f = tl[1];
+
+  // 出力ピクセルごとに逆マップ + bilinear サンプル (境界は replicate)
+  const sw = src.width;
+  const sh = src.height;
+  const sdata = src.data;
+  let warped = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const v = (y + 0.5) / h;
+    for (let x = 0; x < w; x++) {
+      const u = (x + 0.5) / w;
+      const denom = g * u + hcoef * v + 1;
+      const sxF = (a * u + b * v + c) / denom;
+      const syF = (d * u + e * v + f) / denom;
+      const x0 = Math.floor(sxF - 0.5);
+      const y0 = Math.floor(syF - 0.5);
+      const fx = sxF - 0.5 - x0;
+      const fy = syF - 0.5 - y0;
+      const cx0 = Math.min(sw - 1, Math.max(0, x0));
+      const cx1 = Math.min(sw - 1, Math.max(0, x0 + 1));
+      const cy0 = Math.min(sh - 1, Math.max(0, y0));
+      const cy1 = Math.min(sh - 1, Math.max(0, y0 + 1));
+      const i00 = (cy0 * sw + cx0) * 4;
+      const i01 = (cy0 * sw + cx1) * 4;
+      const i10 = (cy1 * sw + cx0) * 4;
+      const i11 = (cy1 * sw + cx1) * 4;
+      const o = (y * w + x) * 4;
+      for (let ch = 0; ch < 3; ch++) {
+        const top = sdata[i00 + ch]! * (1 - fx) + sdata[i01 + ch]! * fx;
+        const bot = sdata[i10 + ch]! * (1 - fx) + sdata[i11 + ch]! * fx;
+        warped[o + ch] = top * (1 - fy) + bot * fy;
+      }
+      warped[o + 3] = 255;
+    }
+  }
+
+  // 縦長 crop は 90° 回転 (np.rot90 と同じ反時計回り; 縦配置テキスト対応)
+  if (h / w >= 1.5) {
+    const rot = new Uint8ClampedArray(w * h * 4);
+    // rot[i][j] = warped[j][w-1-i] (出力は h'=w 行 × w'=h 列)
+    for (let i = 0; i < w; i++) {
+      for (let j = 0; j < h; j++) {
+        const so = (j * w + (w - 1 - i)) * 4;
+        const do_ = (i * h + j) * 4;
+        rot[do_] = warped[so]!;
+        rot[do_ + 1] = warped[so + 1]!;
+        rot[do_ + 2] = warped[so + 2]!;
+        rot[do_ + 3] = 255;
+      }
+    }
+    return { data: rot, width: h, height: w };
+  }
+
+  return { data: warped, width: w, height: h };
+}
+
+/**
+ * 複数 box をまとめてバッチ用テンソル (N, 1, H, W) に変換。
  * Float32Array は連続メモリで [n=0 のH*W, n=1 のH*W, ...] の順。
  *
- * `options.recenter` (default true) で `cropAndNormalize` 側の再センタリングを制御。
+ * 要素は素の BBox (axis-aligned crop) と QuadBox (透視変換で水平矯正) の混在可。
+ * `options.recenter` (default true) は BBox crop のみに適用される。
  */
 export function cropAndNormalizeBatch(
   src: ImageData,
-  bboxes: ReadonlyArray<readonly [number, number, number, number]>,
+  boxes: ReadonlyArray<DetBox>,
   options: CropOptions = {},
 ): Float32Array {
   const stride = INPUT_HEIGHT * INPUT_WIDTH;
-  const out = new Float32Array(bboxes.length * stride);
-  for (let n = 0; n < bboxes.length; n++) {
-    const single = cropAndNormalize(src, bboxes[n]!, options);
+  const out = new Float32Array(boxes.length * stride);
+  for (let n = 0; n < boxes.length; n++) {
+    const quad = detBoxQuad(boxes[n]!);
+    const single = quad
+      ? warpQuadAndNormalize(src, quad)
+      : cropAndNormalize(src, detBoxBBox(boxes[n]!), options);
     out.set(single, n * stride);
   }
   return out;

@@ -241,9 +241,12 @@ paddle rec 単体は辞書6623で重く ~10s かかるため非推奨。)
 import { MeibanOCR, createPaddleDetDetector } from '@assets/meiban-ocr/runtime';
 
 // paddle det を DetectorFn 化(同梱の ppocrv4_det を使う)
+// boxMode は default 'quad'(本家準拠の回転矯正crop)。E2E実測(held-out 3,219枚):
+//   rect@960 37.7% → quad@960 65.9% → quad@1280 78.4%(detLongSide はレイテンシと相談)
 const detector = await createPaddleDetDetector({
   detModelUrl: '/assets/meiban-ocr/model/paddle/ppocrv4_det.onnx',
   executionProviders: ['webgpu', 'wasm'],
+  detLongSide: 1280,   // 精度優先。フレームレート優先なら 960
 });
 
 const ocr = await MeibanOCR.create({

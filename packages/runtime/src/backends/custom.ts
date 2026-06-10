@@ -28,7 +28,7 @@ import {
   createSlidingWindowDetector,
   type SlidingWindowOptions,
 } from '../detectors/sliding-window';
-import type { BBox, DetectorFn } from '../detectors/types';
+import { detBoxBBox, type DetBox, type DetectorFn } from '../detectors/types';
 import { cropAndNormalizeBatch, type RecenterOptions } from '../preprocess';
 import { ericsson, VENDOR_PATTERNS, type VendorPattern } from '../vendors';
 import { createOrtSession } from './_shared';
@@ -82,19 +82,23 @@ export class CustomBackend implements Backend {
   }
 
   async recognize(imageData: ImageData): Promise<OCRResult[]> {
-    const bboxesRaw = await this.detector(imageData);
-    if (bboxesRaw.length === 0) return [];
+    const boxesRaw = await this.detector(imageData);
+    if (boxesRaw.length === 0) return [];
 
     // 古典 CV pre-filter (default ON)。
     // Phase 2a 実証: pos recall 100% 維持 + 窓数 ~半減 + 推論時間 ~半減。
-    let bboxes: BBox[] = bboxesRaw;
+    // 判定は axis-aligned bbox で行い、quad つき box は quad を保持したまま残す。
+    let boxes: readonly DetBox[] = boxesRaw;
     if (this.prefilterOption !== false) {
       const pfOpts: PrefilterOptions =
         this.prefilterOption && typeof this.prefilterOption === 'object'
           ? this.prefilterOption
           : {};
-      bboxes = prefilterBboxes(imageData, bboxes, pfOpts);
-      if (bboxes.length === 0) return [];
+      const kept = new Set(
+        prefilterBboxes(imageData, boxes.map(detBoxBBox), pfOpts),
+      );
+      boxes = boxes.filter((b) => kept.has(detBoxBBox(b)));
+      if (boxes.length === 0) return [];
     }
 
     const scored: ScoredDetection[] = [];
@@ -104,8 +108,8 @@ export class CustomBackend implements Backend {
     const cropOpts: { recenter?: boolean | RecenterOptions } =
       this.recenterOption === undefined ? {} : { recenter: this.recenterOption };
 
-    for (let i = 0; i < bboxes.length; i += this.maxBatchSize) {
-      const batchBoxes = bboxes.slice(i, i + this.maxBatchSize);
+    for (let i = 0; i < boxes.length; i += this.maxBatchSize) {
+      const batchBoxes = boxes.slice(i, i + this.maxBatchSize);
       const flat = cropAndNormalizeBatch(imageData, batchBoxes, cropOpts);
       const inputTensor = new ort.Tensor(
         'float32',
@@ -146,7 +150,7 @@ export class CustomBackend implements Backend {
         if (!corr.text) continue;
         if (confidence < this.minConfidence) continue;
         scored.push({
-          bbox: batchBoxes[b]! as [number, number, number, number],
+          bbox: detBoxBBox(batchBoxes[b]!) as [number, number, number, number],
           text: corr.text,
           confidence,
         });

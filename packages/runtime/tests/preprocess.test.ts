@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { recenterBbox } from '../src/preprocess';
+import { recenterBbox, warpQuadToImage } from '../src/preprocess';
 
 /** ImageData polyfill (Node.js テスト環境用、prefilter.test.ts と同じパターン)。 */
 function makeImageData(width: number, height: number, data: Uint8ClampedArray): ImageData {
@@ -126,5 +126,111 @@ describe('recenterBbox', () => {
     const orig: [number, number, number, number] = [10, 5, 11, 6];
     const out = recenterBbox(img, orig);
     expect(out).toEqual(orig);
+  });
+});
+
+describe('warpQuadToImage', () => {
+  /** 黒地に回転帯 (白): 中心 (cx,cy)、単位方向 (ux,uy)、長さ len、太さ thick。 */
+  function makeRotatedBand(
+    width: number,
+    height: number,
+    cx: number,
+    cy: number,
+    ux: number,
+    uy: number,
+    len: number,
+    thick: number,
+  ): ImageData {
+    const img = makeUniformGray(width, height, 0);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const px = x + 0.5 - cx;
+        const py = y + 0.5 - cy;
+        const u = px * ux + py * uy;
+        const n = -px * uy + py * ux;
+        if (Math.abs(u) <= len / 2 && Math.abs(n) <= thick / 2) {
+          const i = (y * width + x) * 4;
+          img.data[i] = img.data[i + 1] = img.data[i + 2] = 255;
+        }
+      }
+    }
+    return img;
+  }
+
+  it('axis-aligned quad: 元画像の部分矩形がそのまま出る', () => {
+    const img = makeUniformGray(64, 32, 0);
+    // (10,8)-(40,20) を白で塗る
+    for (let y = 8; y < 20; y++) {
+      for (let x = 10; x < 40; x++) {
+        const i = (y * 64 + x) * 4;
+        img.data[i] = img.data[i + 1] = img.data[i + 2] = 255;
+      }
+    }
+    const out = warpQuadToImage(img, [
+      [10, 8],
+      [40, 8],
+      [40, 20],
+      [10, 20],
+    ]);
+    expect(out.width).toBe(30);
+    expect(out.height).toBe(12);
+    // 中央は白
+    const c = ((6 * 30) + 15) * 4;
+    expect(out.data[c]).toBeGreaterThan(250);
+  });
+
+  it('回転 quad: 帯に沿った quad を渡すと水平に矯正される', () => {
+    // 方向 (0.8, 0.6) ≈ 36.87° の帯、長さ 60、太さ 14
+    const img = makeRotatedBand(100, 100, 50, 50, 0.8, 0.6, 60, 14);
+    // 帯にぴったり沿う quad (tl, tr, br, bl)
+    const ux = 0.8, uy = 0.6;
+    const hw = 30, hh = 7;
+    const quad: [number, number][] = [
+      [50 - ux * hw + uy * hh, 50 - uy * hw - ux * hh],
+      [50 + ux * hw + uy * hh, 50 + uy * hw - ux * hh],
+      [50 + ux * hw - uy * hh, 50 + uy * hw + ux * hh],
+      [50 - ux * hw - uy * hh, 50 - uy * hw + ux * hh],
+    ];
+    const out = warpQuadToImage(img, quad as never);
+    expect(out.width).toBe(60);
+    expect(out.height).toBe(14);
+    // 矯正後: 中央行はほぼ全幅 白 (帯が水平になっている)
+    let rowSum = 0;
+    for (let x = 5; x < 55; x++) {
+      rowSum += out.data[((7 * 60) + x) * 4]!;
+    }
+    expect(rowSum / 50).toBeGreaterThan(220);
+    // 帯の外 (上下) は黒: warp 後の上端行は band 境界ぼけを除き暗い…
+    // band ぴったり quad なので上端行も band 内。代わりに横方向の一様性を確認:
+    // 中央行の左端・中央・右端が全部白 = 斜め帯が水平化された証拠
+    expect(out.data[((7 * 60) + 5) * 4]).toBeGreaterThan(200);
+    expect(out.data[((7 * 60) + 30) * 4]).toBeGreaterThan(200);
+    expect(out.data[((7 * 60) + 54) * 4]).toBeGreaterThan(200);
+  });
+
+  it('縦長 quad (h/w >= 1.5) は 90° 回転して横長で返る', () => {
+    const img = makeUniformGray(64, 64, 128);
+    const out = warpQuadToImage(img, [
+      [20, 5],
+      [30, 5],
+      [30, 55],
+      [20, 55],
+    ]);
+    // w=10, h=50 → rot90 で 50×10
+    expect(out.width).toBe(50);
+    expect(out.height).toBe(10);
+  });
+
+  it('画像境界外にはみ出た quad は replicate で埋まり例外を出さない', () => {
+    const img = makeUniformGray(32, 32, 200);
+    const out = warpQuadToImage(img, [
+      [-10, -10],
+      [40, -10],
+      [40, 20],
+      [-10, 20],
+    ]);
+    expect(out.width).toBe(50);
+    expect(out.height).toBe(30);
+    expect(out.data[0]).toBe(200); // 範囲外も replicate された一様値
   });
 });

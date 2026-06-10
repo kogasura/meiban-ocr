@@ -21,9 +21,9 @@
 import * as ort from 'onnxruntime-web';
 
 import { createOrtSession } from '../backends/_shared';
-import { dbPostprocess } from '../backends/paddle/db_postprocess';
+import { dbPostprocess, dbPostprocessQuad } from '../backends/paddle/db_postprocess';
 import { preprocessForDet } from '../backends/paddle/preprocess';
-import type { BBox, DetectorFn } from './types';
+import type { DetBox, DetectorFn } from './types';
 
 export interface PaddleDetDetectorOptions {
   /** det モデル URL(PP-OCRv4 det)。 detModelBytes 未指定時に必須。 */
@@ -39,6 +39,12 @@ export interface PaddleDetDetectorOptions {
   binaryThreshold?: number;
   /** 検出 box 最小サイズ(短辺 px)。 default 3。 */
   minBoxSize?: number;
+  /** box 抽出方式。 default 'quad'(本家準拠 minAreaRect → 透視変換で水平矯正crop)。
+   * E2E実測 (tools/eval_end_to_end.py @960 全件): rect 37.7% → quad 65.9%、偽発火 -45%。
+   * 'rect' は旧挙動(連結成分 → axis-aligned bbox)へのエスケープハッチ。 */
+  boxMode?: 'quad' | 'rect';
+  /** quad モードの unclip 倍率(Vatti offset)。 default 1.6。 */
+  unclipRatio?: number;
 }
 
 /**
@@ -63,27 +69,30 @@ export async function createPaddleDetDetector(
   const detLongSide = options.detLongSide ?? 960;
   const binaryThreshold = options.binaryThreshold ?? 0.3;
   const minBoxSize = options.minBoxSize ?? 3;
+  const boxMode = options.boxMode ?? 'quad';
+  const unclipRatio = options.unclipRatio ?? 1.6;
   const inputName = session.inputNames[0]!;
   const outputName = session.outputNames[0]!;
 
-  return async (image: ImageData): Promise<BBox[]> => {
+  return async (image: ImageData): Promise<readonly DetBox[]> => {
     const det = preprocessForDet(image, detLongSide);
     const tensor = new ort.Tensor('float32', det.tensor, [1, 3, det.height, det.width]);
     const out = await session.run({ [inputName]: tensor });
     const seg = out[outputName]!;
     const [, , segH, segW] = seg.dims as [number, number, number, number];
-    return dbPostprocess(
-      seg.data as Float32Array,
-      segH,
-      segW,
-      image.height,
-      image.width,
-      {
-        binaryThreshold,
-        minBoxSize,
-        scaleX: image.width / segW,
-        scaleY: image.height / segH,
-      },
-    );
+    const dbOpts = {
+      binaryThreshold,
+      minBoxSize,
+      unclipRatio,
+      scaleX: image.width / segW,
+      scaleY: image.height / segH,
+    };
+    return boxMode === 'quad'
+      ? dbPostprocessQuad(
+          seg.data as Float32Array, segH, segW, image.height, image.width, dbOpts,
+        )
+      : dbPostprocess(
+          seg.data as Float32Array, segH, segW, image.height, image.width, dbOpts,
+        );
   };
 }

@@ -21,7 +21,15 @@ export {
 export { ericsson, type VendorPattern, VENDOR_PATTERNS } from './vendors';
 export { ctcGreedyDecode, applyCorrectionPipeline, preprocessText } from './decoder';
 export type { CropOptions, ImageInput, RecenterOptions } from './preprocess';
-export type { BBox, DetectorFn } from './detectors/types';
+export {
+  detBoxBBox,
+  detBoxQuad,
+  type BBox,
+  type DetBox,
+  type DetectorFn,
+  type Quad,
+  type QuadBox,
+} from './detectors/types';
 export {
   createSlidingWindowDetector,
   type SlidingWindowOptions,
