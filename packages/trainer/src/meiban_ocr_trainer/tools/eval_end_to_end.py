@@ -30,10 +30,16 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-from meiban_ocr_trainer.tools.diagnose_pipeline import _decode_logits, crop_and_normalize
+from meiban_ocr_trainer.tools.diagnose_pipeline import (
+    _decode_logits,
+    crop_and_normalize,
+    normalize_crop,
+)
 from meiban_ocr_trainer.tools.eval_recognition import load_predictor
 from meiban_ocr_trainer.tools.mine_nonserial_negatives import (
     db_postprocess,
+    db_postprocess_quad,
+    get_rotate_crop,
     preprocess_for_det,
 )
 from meiban_ocr_trainer.vendors import ERICSSON
@@ -68,7 +74,8 @@ def _test_serials(labels_path: Path, split: str) -> set[str]:
 
 def evaluate(crnn_pt: Path, det_model: Path, samples_dir: Path, annotations_dir: Path,
              labels_path: Path, split: str, cover_thresh: float, limit: int,
-             det_long_side: int = 736) -> dict:
+             det_long_side: int = 736, box_mode: str = "rect",
+             unclip_ratio: float = 1.6) -> dict:
     test_serials = _test_serials(labels_path, split)
     predict, mt, tok, resize_mode = load_predictor(crnn_pt)
     sess = ort.InferenceSession(str(det_model), providers=["CPUExecutionProvider"])
@@ -125,7 +132,18 @@ def evaluate(crnn_pt: Path, det_model: Path, samples_dir: Path, annotations_dir:
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         oh, ow = rgb.shape[:2]
         seg = sess.run([out_name], {in_name: preprocess_for_det(rgb, det_long_side)})[0]
-        boxes = db_postprocess(np.asarray(seg)[0, 0].astype(np.float32), oh, ow)
+        seg_map = np.asarray(seg)[0, 0].astype(np.float32)
+        if box_mode == "quad":
+            quads = db_postprocess_quad(seg_map, oh, ow, unclip_ratio=unclip_ratio)
+            # 被覆判定は GT bbox と同じ axis-aligned 外接矩形で行う
+            boxes = [
+                [int(q[:, 0].min()), int(q[:, 1].min()),
+                 int(np.ceil(q[:, 0].max())), int(np.ceil(q[:, 1].max()))]
+                for q in quads
+            ]
+        else:
+            quads = None
+            boxes = db_postprocess(seg_map, oh, ow)
         n_det_boxes += len(boxes)
 
         # 全 GT serial (test+train) を発火判定の正解集合に
@@ -137,7 +155,14 @@ def evaluate(crnn_pt: Path, det_model: Path, samples_dir: Path, annotations_dir:
 
         # 全 det box を rec (発火率 + 各 GT に対する被覆/認識判定に使う)
         if boxes:
-            arrs = [crop_and_normalize(rgb, b, resize_mode) for b in boxes]
+            if box_mode == "quad":
+                from meiban_ocr_trainer.constants import INPUT_HEIGHT, INPUT_WIDTH
+                empty = np.zeros((INPUT_HEIGHT, INPUT_WIDTH), dtype=np.float32)
+                crops = [get_rotate_crop(rgb, q) for q in quads]
+                arrs = [normalize_crop(c, resize_mode) if c is not None else empty
+                        for c in crops]
+            else:
+                arrs = [crop_and_normalize(rgb, b, resize_mode) for b in boxes]
             logits = predict(arrs)
             decoded = _decode_logits(mt, tok, logits)  # [(text,conf)]
             box_texts = [_norm(t) for t, _ in decoded]
@@ -191,6 +216,8 @@ def evaluate(crnn_pt: Path, det_model: Path, samples_dir: Path, annotations_dir:
     return {
         "crnn": str(crnn_pt), "det": str(det_model), "split": split,
         "det_long_side": det_long_side,
+        "box_mode": box_mode,
+        "unclip_ratio": unclip_ratio if box_mode == "quad" else None,
         "resize_mode": resize_mode, "cover_thresh": cover_thresh,
         "n_images": n_images, "n_gt_testserial_regions": n_gt,
         "n_det_boxes": n_det_boxes,
@@ -221,12 +248,16 @@ def main(argv=None) -> int:
     p.add_argument("--split", type=str, default="test")
     p.add_argument("--cover-thresh", type=float, default=0.5, help="det box が GT を覆う containment 閾値")
     p.add_argument("--det-long-side", type=int, default=736, help="paddle det の長辺リサイズ(本番=736)")
+    p.add_argument("--box-mode", choices=["rect", "quad"], default="rect",
+                   help="rect=現行(CC→axis-aligned bbox) / quad=本家準拠(minAreaRect→回転矯正crop)")
+    p.add_argument("--unclip-ratio", type=float, default=1.6, help="quad モードの unclip 倍率")
     p.add_argument("--limit", type=int, default=0, help="評価画像数上限 (0=全件)")
     p.add_argument("--json", type=Path, default=None)
     args = p.parse_args(argv)
 
     res = evaluate(args.crnn, args.det, args.samples_dir, args.annotations_dir,
-                   args.labels, args.split, args.cover_thresh, args.limit, args.det_long_side)
+                   args.labels, args.split, args.cover_thresh, args.limit, args.det_long_side,
+                   args.box_mode, args.unclip_ratio)
     print(json.dumps({k: v for k, v in res.items()
                       if k not in ("miss_examples", "rec_fail_examples")},
                      ensure_ascii=False, indent=2))

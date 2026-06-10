@@ -93,6 +93,73 @@ def db_postprocess(seg_map: np.ndarray, orig_h: int, orig_w: int):
     return boxes
 
 
+def _order_quad(pts: np.ndarray) -> np.ndarray:
+    """4点を tl, tr, br, bl 順に並べる (PaddleOCR get_mini_boxes 同等)。"""
+    s = pts.sum(axis=1)
+    d = pts[:, 0] - pts[:, 1]
+    return np.array(
+        [pts[np.argmin(s)], pts[np.argmax(d)], pts[np.argmax(s)], pts[np.argmin(d)]],
+        dtype=np.float32,
+    )
+
+
+def db_postprocess_quad(
+    seg_map: np.ndarray,
+    orig_h: int,
+    orig_w: int,
+    unclip_ratio: float = UNCLIP_RATIO,
+) -> list[np.ndarray]:
+    """本家 PaddleOCR DBPostProcess 準拠: contour → minAreaRect → unclip → 回転 quad。
+
+    既存 db_postprocess (連結成分 → axis-aligned bbox) は傾いた行を背景ごと抱き込み、
+    隣接行を1成分に融合する。本関数は contour ごとの minAreaRect で行単位の回転
+    quad を出す。unclip は本家の Vatti offset (d = area*ratio/perimeter) を矩形に
+    閉形式で適用 (pyclipper 依存を避ける)。
+
+    返り値: 元画像座標の quad (np.ndarray (4,2) float32, tl/tr/br/bl 順) のリスト。
+    """
+    seg_h, seg_w = seg_map.shape
+    binary = (seg_map >= BINARY_THRESHOLD).astype(np.uint8)
+    contours, _ = cv2.findContours(binary, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    scale_x = orig_w / seg_w
+    scale_y = orig_h / seg_h
+    quads: list[np.ndarray] = []
+    for cnt in contours:
+        (cx, cy), (w, h), angle = cv2.minAreaRect(cnt)
+        if min(w, h) < MIN_BOX_SIZE:
+            continue
+        # box_score_fast 同等: contour 内部の seg 平均
+        x, y, bw, bh = cv2.boundingRect(cnt)
+        mask = np.zeros((bh, bw), dtype=np.uint8)
+        cv2.fillPoly(mask, [cnt.reshape(-1, 2) - np.array([x, y])], 1)
+        score = float(cv2.mean(seg_map[y : y + bh, x : x + bw], mask)[0])
+        if score < SCORE_THRESHOLD:
+            continue
+        # DB の seg は shrink 領域なので offset で復元: 矩形の Vatti offset は全辺 +d
+        d = (w * h * unclip_ratio) / (2.0 * (w + h))
+        pts = cv2.boxPoints(((cx, cy), (w + 2 * d, h + 2 * d), angle))
+        pts[:, 0] = np.clip(pts[:, 0] * scale_x, 0, orig_w - 1)
+        pts[:, 1] = np.clip(pts[:, 1] * scale_y, 0, orig_h - 1)
+        quads.append(_order_quad(pts))
+    return quads
+
+
+def get_rotate_crop(img_rgb: np.ndarray, quad: np.ndarray) -> np.ndarray | None:
+    """PaddleOCR get_rotate_crop_image 移植: quad を透視変換で水平矩形 crop に矯正。"""
+    w = int(round(max(np.linalg.norm(quad[0] - quad[1]), np.linalg.norm(quad[2] - quad[3]))))
+    h = int(round(max(np.linalg.norm(quad[0] - quad[3]), np.linalg.norm(quad[1] - quad[2]))))
+    if w < 1 or h < 1:
+        return None
+    dst = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
+    mat = cv2.getPerspectiveTransform(quad.astype(np.float32), dst)
+    crop = cv2.warpPerspective(
+        img_rgb, mat, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
+    )
+    if h / max(1, w) >= 1.5:
+        crop = np.ascontiguousarray(np.rot90(crop))
+    return crop
+
+
 def _iou(a, b) -> float:
     ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
     ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])

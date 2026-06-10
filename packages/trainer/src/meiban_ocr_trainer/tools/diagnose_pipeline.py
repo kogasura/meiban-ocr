@@ -201,9 +201,16 @@ def crop_and_normalize(
     if x2c <= x1c or y2c <= y1c:
         return np.zeros((INPUT_HEIGHT, INPUT_WIDTH), dtype=np.float32)
     crop = img_rgb[y1c:y2c, x1c:x2c]
+    return normalize_crop(crop, resize_mode)
+
+
+def normalize_crop(crop_rgb: np.ndarray, resize_mode: str = "stretch") -> np.ndarray:
+    """crop 済み RGB を 32×128 リサイズ → Rec.709 グレースケール → [-1, 1] 正規化。"""
+    from meiban_ocr_trainer.data.resize import resize_for_model
+
     # cv2.resize は (W, H) 順
     resized = resize_for_model(
-        crop, INPUT_WIDTH, INPUT_HEIGHT, mode=resize_mode, interpolation=cv2.INTER_AREA
+        crop_rgb, INPUT_WIDTH, INPUT_HEIGHT, mode=resize_mode, interpolation=cv2.INTER_AREA
     )
     # Rec.709 luminance
     y = (0.2126 * resized[..., 0]
