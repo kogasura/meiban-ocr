@@ -347,7 +347,8 @@ def _decode_logits(model_type: str, tokenizer, logits_np: np.ndarray) -> list[tu
     Returns list of (pred_text, confidence) for each batch sample.
     """
     logits_t = torch.from_numpy(logits_np)
-    if model_type == "fixed_head":
+    if model_type in ("fixed_head", "attn"):
+        # FixedLengthTokenizer / AttnTokenizer はともに decode_with_conf を持つ
         return tokenizer.decode_with_conf(logits_t)
     # CTC: greedy_decode_with_conf を使用
     return tokenizer.greedy_decode_with_conf(logits_t)

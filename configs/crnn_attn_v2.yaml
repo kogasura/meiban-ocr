@@ -1,0 +1,34 @@
+# attention decoder v2: v1 の欠陥修正 — 負例を epoch1 から混ぜる + best選定に偽発火
+# ペナルティ (train_attn の合成score)。v1 は best=epoch5 (負例未学習) で neg_fire 99%。
+data:
+  root: data/recognition_pad
+  vendor: ericsson
+  labels_filename: labels_serial_split_replaced.tsv
+  resize_mode: stretch
+model:
+  arch: crnn_attn
+  init_from: runs/cr_replaced/best.pt
+  crnn_hidden_size: 256
+train:
+  batch_size: 64
+  epochs: 40
+  lambda_attn: 1.0
+  backbone_lr: 1.0e-05
+  rnn_lr: 5.0e-05
+  ctc_head_lr: 0.0001
+  decoder_lr: 0.001
+  weight_decay: 0.0001
+  num_workers: 4
+  freeze_encoder_epochs: 2
+  early_stopping_patience: 15
+  neg_ratio_schedule:
+  - epoch: 1
+    ratio: 0.25
+  - epoch: 20
+    ratio: 0.3
+  confidence_threshold: 0.7
+runtime:
+  device: cuda
+  seed: 42
+output:
+  runs_dir: runs

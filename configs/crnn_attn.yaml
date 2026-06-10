@@ -1,0 +1,39 @@
+# attention decoder 実験: cr_replaced (CTC, グリフ移植水増し) を encoder warm start に、
+# Bahdanau attention decoder を joint 訓練。狙いは pos11 = CTC 末尾の構造弱点。
+# 採用条件: pos11誤り<200 / EM≥92 / 回転8°≥81% / neg偽発火0維持。満たさなければ撤退 (v10維持)。
+data:
+  root: data/recognition_pad
+  vendor: ericsson
+  labels_filename: labels_serial_split_replaced.tsv  # 水増し込み (cr_replaced と同一)
+  resize_mode: stretch
+model:
+  arch: crnn_attn
+  init_from: runs/cr_replaced/best.pt   # encoder + 補助CTC head の warm start
+  crnn_hidden_size: 256
+train:
+  batch_size: 64
+  epochs: 60
+  lambda_attn: 1.0
+  backbone_lr: 0.00001
+  rnn_lr: 0.00005
+  ctc_head_lr: 0.0001
+  decoder_lr: 0.001
+  weight_decay: 0.0001
+  num_workers: 4
+  freeze_encoder_epochs: 2
+  early_stopping_patience: 20
+  neg_ratio_schedule:
+  - epoch: 1
+    ratio: 0.0
+  - epoch: 5
+    ratio: 0.0
+  - epoch: 15
+    ratio: 0.3
+  - epoch: 40
+    ratio: 0.4
+  confidence_threshold: 0.7
+runtime:
+  device: cuda
+  seed: 42
+output:
+  runs_dir: runs

@@ -18,6 +18,15 @@ NUM_CLASSES_12H: int = 13
 # 32 を割り切る ≥12 の最小値 = 16 を採用。残り 4 位置は常に ∅ でパディングする。
 FIXED_LENGTH: int = 16
 
+# ===== attention decoder (pos11 = CTC 末尾の構造弱点への対策) =====
+# 自己回帰デコーダ用。出力クラス = 36 文字 + EOS。SOS は埋め込み入力専用 (出力されない)。
+EOS_IDX: int = 36
+SOS_IDX: int = 37
+NUM_CLASSES_ATTN: int = 37     # 出力 (36 chars + EOS)
+NUM_EMBEDDINGS_ATTN: int = 38  # 入力埋め込み (36 chars + EOS + SOS)
+# 12 文字 + EOS。最大長が既知なので ONNX export はループの静的展開で済む。
+MAX_DECODE_STEPS: int = 13
+
 # 入力サイズ (CRNN)
 INPUT_HEIGHT: int = 32
 # 2026-06-05: 幅160実験は pos11 改善せず(EM 91.0→91.2 誤差) → 128 に戻した。

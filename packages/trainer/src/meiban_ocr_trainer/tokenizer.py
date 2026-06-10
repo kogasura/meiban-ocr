@@ -327,3 +327,81 @@ __all__ = [
     "NUM_CLASSES_12H",
     "FIXED_LENGTH",
 ]
+
+
+class AttnTokenizer:
+    """attention decoder 用の双方向変換 (36 文字 + EOS、SOS は入力専用)。
+
+    - teacher forcing 入力: [SOS, c1, ..., c12] (長さ MAX_DECODE_STEPS)
+    - 教師ターゲット:       [c1, ..., c12, EOS]。EOS 以降は ignore_index (-100)
+    - 負例 (text=''):       入力 [SOS, EOS, EOS, ...] / ターゲット [EOS, -100, ...]
+      → 「ステップ0で EOS」= 構造的 reject を学習する
+    """
+
+    IGNORE_INDEX = -100
+
+    def __init__(self, charset: str = CHARSET) -> None:
+        from meiban_ocr_trainer.constants import (
+            EOS_IDX,
+            MAX_DECODE_STEPS,
+            NUM_CLASSES_ATTN,
+            SOS_IDX,
+        )
+        self.charset = charset
+        self.eos_idx = EOS_IDX
+        self.sos_idx = SOS_IDX
+        self.num_classes = NUM_CLASSES_ATTN
+        self.max_steps = MAX_DECODE_STEPS
+        self._char_to_idx = {c: i for i, c in enumerate(charset)}
+
+    def encode_teacher(
+        self, texts: list[str]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """texts → (teacher_inputs (B, S), targets (B, S))。S = MAX_DECODE_STEPS。
+
+        長さ > S-1 のテキストは ValueError (Ericsson serial は常に 12 ≤ S-1)。
+        """
+        B, S = len(texts), self.max_steps
+        inputs = torch.full((B, S), self.eos_idx, dtype=torch.long)
+        targets = torch.full((B, S), self.IGNORE_INDEX, dtype=torch.long)
+        for b, t in enumerate(texts):
+            if len(t) > S - 1:
+                raise ValueError(f"text too long for attention decoder: {t!r}")
+            ids = [self._char_to_idx[c] for c in t]
+            inputs[b, 0] = self.sos_idx
+            for i, c in enumerate(ids):
+                inputs[b, i + 1] = c
+                targets[b, i] = c
+            targets[b, len(ids)] = self.eos_idx
+        return inputs, targets
+
+    def decode_with_conf(self, logits: torch.Tensor) -> list[tuple[str, float]]:
+        """greedy decode + per-sample confidence。
+
+        Args:
+            logits: (B, S, NUM_CLASSES_ATTN)。自己回帰 greedy で生成済みの step logits。
+
+        confidence は「EOS までの各ステップ softmax 最大確率の平均」。
+        空出力 (step0 で EOS) は EOS ステップ自体の確率を reject 確信度として返す。
+        """
+        if logits.ndim != 3:
+            raise ValueError(f"logits must be 3D, got {tuple(logits.shape)}")
+        probs = torch.softmax(logits.detach(), dim=-1).cpu()
+        best_prob, best_idx = probs.max(dim=-1)  # (B, S)
+        out: list[tuple[str, float]] = []
+        for b in range(probs.shape[0]):
+            chars: list[str] = []
+            confs: list[float] = []
+            eos_conf = 1.0
+            for s in range(probs.shape[1]):
+                idx = int(best_idx[b, s])
+                if idx == self.eos_idx:
+                    eos_conf = float(best_prob[b, s])
+                    break
+                chars.append(self.charset[idx] if idx < len(self.charset) else "")
+                confs.append(float(best_prob[b, s]))
+            if chars:
+                out.append(("".join(chars), float(sum(confs) / len(confs))))
+            else:
+                out.append(("", eos_conf))
+        return out

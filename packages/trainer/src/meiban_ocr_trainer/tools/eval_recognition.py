@@ -79,6 +79,19 @@ def load_predictor(model_path: Path, resize_mode_override: str | None = None):
         full_cfg = ckpt.get("config", {})
         cfg = full_cfg.get("model", {})
         resize_mode = resize_mode_override or full_cfg.get("data", {}).get("resize_mode", "stretch")
+        if cfg.get("arch") == "crnn_attn":
+            from meiban_ocr_trainer.models.crnn_attn import CRNNAttn
+            from meiban_ocr_trainer.tokenizer import AttnTokenizer
+            model = CRNNAttn(hidden_size=int(cfg.get("crnn_hidden_size", 256)))
+            model.load_state_dict(ckpt["model_state"])
+            model = model.to(dev).eval()
+
+            @torch.no_grad()
+            def predict(arrs):
+                x = torch.from_numpy(np.stack(arrs)[:, None, :, :].astype(np.float32)).to(dev)
+                _, attn_logits = model(x, teacher_inputs=None)
+                return attn_logits.cpu().numpy()
+            return predict, "attn", AttnTokenizer(), resize_mode
         model = CRNNPretrained(
             num_classes=int(cfg.get("num_classes", 37)),
             hidden_size=int(cfg.get("crnn_hidden_size", 256)),
