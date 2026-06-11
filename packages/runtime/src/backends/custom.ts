@@ -21,6 +21,7 @@ import {
   applyCorrectionPipeline,
   ctcGreedyDecodeWithConfidence,
   fixedHeadDecodeWithConfidence,
+  mergeTailRead,
 } from '../decoder';
 import { nmsByText, type ScoredDetection } from '../detectors/nms';
 import { prefilterBboxes, type PrefilterOptions } from '../detectors/prefilter';
@@ -28,8 +29,13 @@ import {
   createSlidingWindowDetector,
   type SlidingWindowOptions,
 } from '../detectors/sliding-window';
-import { detBoxBBox, type DetBox, type DetectorFn } from '../detectors/types';
-import { cropAndNormalizeBatch, type RecenterOptions } from '../preprocess';
+import { detBoxBBox, detBoxQuad, type DetBox, type DetectorFn } from '../detectors/types';
+import {
+  cropAndNormalize,
+  cropAndNormalizeBatch,
+  warpQuadToImage,
+  type RecenterOptions,
+} from '../preprocess';
 import { ericsson, VENDOR_PATTERNS, type VendorPattern } from '../vendors';
 import { createOrtSession } from './_shared';
 import type { Backend, CustomBackendInit, OCRResult } from './types';
@@ -39,23 +45,28 @@ const DEFAULT_EPS: Array<'webgpu' | 'wasm' | 'webgl'> = ['webgpu', 'wasm'];
 
 export class CustomBackend implements Backend {
   private readonly session: ort.InferenceSession;
+  private readonly tailSession: ort.InferenceSession | null;
   private readonly detector: DetectorFn;
   private readonly vendor: VendorPattern;
   private readonly minConfidence: number;
+  private readonly tailConfidence: number;
   private readonly maxBatchSize: number;
   private readonly prefilterOption: boolean | PrefilterOptions;
   private readonly recenterOption: boolean | RecenterOptions | undefined;
 
   private constructor(
     session: ort.InferenceSession,
+    tailSession: ort.InferenceSession | null,
     detector: DetectorFn,
     vendor: VendorPattern,
     options: CustomBackendInit,
   ) {
     this.session = session;
+    this.tailSession = tailSession;
     this.detector = detector;
     this.vendor = vendor;
     this.minConfidence = options.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
+    this.tailConfidence = options.tailConfidence ?? 0.9;
     this.maxBatchSize = options.maxBatchSize ?? 64;
     this.prefilterOption = options.prefilter ?? true;
     this.recenterOption = options.recenter;
@@ -78,7 +89,18 @@ export class CustomBackend implements Backend {
       sessionOptions,
       'modelUrl',
     );
-    return new CustomBackend(session, detector, vendor, options);
+    // 末尾 2nd-pass モデル (オプション)。未指定なら従来挙動。
+    let tailSession: ort.InferenceSession | null = null;
+    if (options.tailModelBytes || options.tailModelUrl) {
+      tailSession = await createOrtSession(
+        options.tailModelBytes,
+        options.tailModelUrl,
+        undefined,
+        sessionOptions,
+        'tailModelUrl',
+      );
+    }
+    return new CustomBackend(session, tailSession, detector, vendor, options);
   }
 
   async recognize(imageData: ImageData): Promise<OCRResult[]> {
@@ -101,13 +123,21 @@ export class CustomBackend implements Backend {
       if (boxes.length === 0) return [];
     }
 
-    const scored: ScoredDetection[] = [];
-
     // recenter: PR #1 で preprocess.ts に追加された window 再センタリング。
     // undefined → cropAndNormalize 側の default (true) に委譲。
     const cropOpts: { recenter?: boolean | RecenterOptions } =
       this.recenterOption === undefined ? {} : { recenter: this.recenterOption };
 
+    // Phase 1: full read (従来どおり)。補正・採点は tail 2nd-pass 後に行うため
+    // raw decode を保持する。
+    interface RawRead {
+      box: DetBox;
+      raw: string;
+      confidence: number;
+      charTimesteps: number[] | null;
+      numTimesteps: number;
+    }
+    const raws: RawRead[] = [];
     for (let i = 0; i < boxes.length; i += this.maxBatchSize) {
       const batchBoxes = boxes.slice(i, i + this.maxBatchSize);
       const flat = cropAndNormalizeBatch(imageData, batchBoxes, cropOpts);
@@ -124,37 +154,52 @@ export class CustomBackend implements Backend {
       const [B, T, C] = logits.dims as [number, number, number];
 
       // Model type auto-detect (旧 v0.3.x CTC ONNX も同じ runtime で動く)。
-      let decode:
-        | typeof ctcGreedyDecodeWithConfidence
-        | typeof fixedHeadDecodeWithConfidence;
-      if (C === NUM_CLASSES) {
-        decode = ctcGreedyDecodeWithConfidence;
-      } else if (C === NUM_CLASSES_12H) {
-        if (T !== FIXED_LENGTH) {
-          throw new Error(
-            `fixed-head model expects T=${FIXED_LENGTH}, got T=${T}`,
-          );
-        }
-        decode = fixedHeadDecodeWithConfidence;
-      } else {
+      const isCtc = C === NUM_CLASSES;
+      if (!isCtc && C !== NUM_CLASSES_12H) {
         throw new Error(
           `unexpected logits C=${C}, expected ${NUM_CLASSES} (CTC) or ${NUM_CLASSES_12H} (fixed-head)`,
         );
+      }
+      if (!isCtc && T !== FIXED_LENGTH) {
+        throw new Error(`fixed-head model expects T=${FIXED_LENGTH}, got T=${T}`);
       }
 
       const flatLogits = logits.data as Float32Array;
       for (let b = 0; b < B; b++) {
         const slice = flatLogits.subarray(b * T * C, (b + 1) * T * C);
-        const { text: raw, confidence } = decode(slice, T, C);
-        const corr = applyCorrectionPipeline(raw, this.vendor);
-        if (!corr.text) continue;
-        if (confidence < this.minConfidence) continue;
-        scored.push({
-          bbox: detBoxBBox(batchBoxes[b]!) as [number, number, number, number],
-          text: corr.text,
-          confidence,
-        });
+        if (isCtc) {
+          const { text, confidence, charTimesteps } =
+            ctcGreedyDecodeWithConfidence(slice, T, C);
+          raws.push({
+            box: batchBoxes[b]!, raw: text, confidence,
+            charTimesteps, numTimesteps: T,
+          });
+        } else {
+          const { text, confidence } = fixedHeadDecodeWithConfidence(slice, T, C);
+          raws.push({
+            box: batchBoxes[b]!, raw: text, confidence,
+            charTimesteps: null, numTimesteps: T,
+          });
+        }
       }
+    }
+
+    // Phase 2: 末尾 2nd-pass (tail モデルが設定されている場合のみ)。
+    if (this.tailSession) {
+      await this.applyTailPass(imageData, raws);
+    }
+
+    // Phase 3: 補正パイプライン + confidence gate + NMS
+    const scored: ScoredDetection[] = [];
+    for (const r of raws) {
+      const corr = applyCorrectionPipeline(r.raw, this.vendor);
+      if (!corr.text) continue;
+      if (r.confidence < this.minConfidence) continue;
+      scored.push({
+        bbox: detBoxBBox(r.box) as [number, number, number, number],
+        text: corr.text,
+        confidence: r.confidence,
+      });
     }
 
     const merged = nmsByText(scored);
@@ -166,8 +211,72 @@ export class CustomBackend implements Backend {
     }));
   }
 
+  /**
+   * 末尾 2nd-pass: 12文字 read (CTC) かつ quad つき box に対し、CTC アライメントで
+   * 末尾4文字領域を再 crop → tail モデルで再読 → mergeTailRead で末尾2文字を差し替え。
+   *
+   * Why: 誤読の95%が pos10/11 に集中 (full crop で末尾1文字≈10px に潰れるため)。
+   * 右端再 crop は1文字≈32px。held-out 実測 E2E +0.92pt / 偽発火微減 / 新規発火なし。
+   */
+  private async applyTailPass(
+    imageData: ImageData,
+    raws: Array<{
+      box: DetBox; raw: string; confidence: number;
+      charTimesteps: number[] | null; numTimesteps: number;
+    }>,
+  ): Promise<void> {
+    interface TailJob { idx: number; input: Float32Array }
+    const jobs: TailJob[] = [];
+    for (let i = 0; i < raws.length; i++) {
+      const r = raws[i]!;
+      if (r.raw.length !== 12 || !r.charTimesteps || r.charTimesteps.length !== 12) {
+        continue;
+      }
+      const quad = detBoxQuad(r.box);
+      if (!quad) continue;
+      // full read の crop 領域を再現 (透視変換)。tail だけ再warpするコストは
+      // 12文字 read を出した box に限られるため軽微。
+      const warped = warpQuadToImage(imageData, quad);
+      // 末尾4文字の開始位置 = pos7/pos8 の emission 中点 (Python 実装と同一)
+      const t8 = r.charTimesteps[8]!;
+      const t7 = r.charTimesteps[7]!;
+      const x0 = Math.round(((t8 + t7) / 2 / r.numTimesteps) * warped.width);
+      if (warped.width - x0 < 8) continue;
+      const wid = new ImageData(warped.data, warped.width, warped.height);
+      jobs.push({
+        idx: i,
+        input: cropAndNormalize(
+          wid, [x0, 0, warped.width, warped.height], { recenter: false },
+        ),
+      });
+    }
+    if (jobs.length === 0) return;
+
+    const stride = 32 * 128;
+    const inputName = this.tailSession!.inputNames[0]!;
+    const outputName = this.tailSession!.outputNames[0]!;
+    for (let i = 0; i < jobs.length; i += this.maxBatchSize) {
+      const batch = jobs.slice(i, i + this.maxBatchSize);
+      const flat = new Float32Array(batch.length * stride);
+      batch.forEach((j, n) => flat.set(j.input, n * stride));
+      const out = await this.tailSession!.run({
+        [inputName]: new ort.Tensor('float32', flat, [batch.length, 1, 32, 128]),
+      });
+      const logits = out[outputName]!;
+      const [B, T, C] = logits.dims as [number, number, number];
+      const flatLogits = logits.data as Float32Array;
+      for (let b = 0; b < B; b++) {
+        const slice = flatLogits.subarray(b * T * C, (b + 1) * T * C);
+        const { text, confidence } = ctcGreedyDecodeWithConfidence(slice, T, C);
+        const r = raws[batch[b]!.idx]!;
+        r.raw = mergeTailRead(r.raw, text, confidence, this.tailConfidence);
+      }
+    }
+  }
+
   async dispose(): Promise<void> {
     await this.session.release();
+    if (this.tailSession) await this.tailSession.release();
   }
 }
 

@@ -127,13 +127,16 @@ export function ctcGreedyDecodeWithConfidence(
   logits: ArrayLike<number>,
   numTimesteps: number,
   numClasses: number,
-): { text: string } & ConfidenceResult {
+): { text: string; charTimesteps: number[] } & ConfidenceResult {
   if (logits.length !== numTimesteps * numClasses) {
     throw new Error(
       `logits length mismatch: expected ${numTimesteps * numClasses}, got ${logits.length}`,
     );
   }
   const out: string[] = [];
+  // 各出力文字が emit された timestep。末尾 2nd-pass の位置特定
+  // (アライメント crop) に使う。長さは text と一致する。
+  const charTimesteps: number[] = [];
   const top1Probs: number[] = [];
   const top2Probs: number[] = [];
   let prev = -1;
@@ -156,6 +159,7 @@ export function ctcGreedyDecodeWithConfidence(
     // CTC text reconstruction (collapse repeat + remove blank)
     if (bestIdx !== prev && bestIdx !== BLANK_IDX) {
       out.push(CHARSET[bestIdx]!);
+      charTimesteps.push(t);
     }
     prev = bestIdx;
     // confidence: skip blank timesteps (文字内容を表す位置のみ)
@@ -172,7 +176,33 @@ export function ctcGreedyDecodeWithConfidence(
   }
   const text = out.join('');
   const agg = aggregateConfidence(top1Probs, top2Probs);
-  return { text, ...agg };
+  return { text, charTimesteps, ...agg };
+}
+
+/**
+ * 末尾 2nd-pass のマージ規則 (Python tools/eval_tail_second_pass と同一)。
+ *
+ * full read (12文字) の末尾2文字を、tail read (4文字、右端4文字領域の高解像再読)
+ * で差し替える。誤適用ガード:
+ *   - tail はちょうど 4 文字であること
+ *   - アンカー照合: tail の先頭2文字が full の pos8-9 と一致すること
+ *   - tail の confidence が minConf 以上であること
+ * 条件を満たさなければ full をそのまま返す。
+ *
+ * Why: 誤読の95%が pos10/11 に集中し、full crop では末尾1文字≈10px に潰れるのが
+ * 原因 (encoder/入力側の限界)。右端だけ 32×128 に再 crop すれば1文字≈32px。
+ * held-out 実測: clean EM +1.26pt / E2E +0.92pt / 偽発火も微減 (新規発火は構造上ゼロ)。
+ */
+export function mergeTailRead(
+  full: string,
+  tail: string,
+  tailConfidence: number,
+  minConf: number = 0.9,
+): string {
+  if (full.length !== 12 || tail.length !== 4) return full;
+  if (tailConfidence < minConf) return full;
+  if (tail.slice(0, 2) !== full.slice(8, 10)) return full;
+  return full.slice(0, 10) + tail.slice(2);
 }
 
 /**

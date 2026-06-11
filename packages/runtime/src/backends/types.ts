@@ -78,6 +78,19 @@ export interface CustomBackendInit extends CommonBackendOptions {
    * - `false`: 旧挙動 (ズレた窓をそのまま渡す)
    */
   recenter?: boolean | RecenterOptions;
+  /**
+   * 末尾 2nd-pass 専用モデル (CTC、末尾4文字を高解像で再読) の URL。
+   * 指定すると quad つき box の 12 文字 read に対し、CTC アライメントで末尾4文字
+   * 領域を再 crop → このモデルで再読 → アンカー一致 & 高 confidence のときだけ
+   * 末尾2文字を差し替える。誤読の95%が集中する pos10/11 への対策
+   * (held-out 実測: clean EM +1.26pt / E2E +0.92pt / 偽発火も微減、新規発火なし)。
+   * 未指定なら 2nd-pass 無効 (従来挙動)。
+   */
+  tailModelUrl?: string;
+  /** 末尾 2nd-pass モデルのバイト列 (URL の代替)。 */
+  tailModelBytes?: Uint8Array | ArrayBuffer;
+  /** 末尾差し替えに要求する tail read の confidence。default 0.9。 */
+  tailConfidence?: number;
 }
 
 /**

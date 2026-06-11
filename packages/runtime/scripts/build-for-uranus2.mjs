@@ -149,6 +149,41 @@ function copyCustomModel() {
   };
 }
 
+function copyTailModel() {
+  // 末尾 2nd-pass 専用モデル (meiban-ocr-tail-v<N>.onnx の最大 N)。無ければ skip。
+  // full モデルと同じ理由で fp32 兄弟を優先 (iOS Safari WebGPU の shader-f16 未対応)。
+  const modelsDir = resolve(repoRoot, 'models');
+  if (!existsSync(modelsDir)) return null;
+  const tailRe = /^meiban-ocr-tail-v(\d+)\.onnx$/;
+  const candidates = readdirSync(modelsDir)
+    .map(f => ({ f, m: tailRe.exec(f) }))
+    .filter(x => x.m)
+    .sort((a, b) => parseInt(b.m[1], 10) - parseInt(a.m[1], 10));
+  if (candidates.length === 0) {
+    log('no tail model (meiban-ocr-tail-v*.onnx) — 2nd-pass disabled in INSTALL example');
+    return null;
+  }
+  const src = resolve(modelsDir, candidates[0].f);
+  const fp32Sibling = src.replace(/\.onnx$/, '.fp32.onnx');
+  const actualSrc = existsSync(fp32Sibling) ? fp32Sibling : src;
+  const dst = resolve(outDir, 'model', 'custom', 'meiban-ocr-tail.onnx');
+  copyFileSync(actualSrc, dst);
+  const size = statSync(dst).size;
+  const hash = fileSha256(dst);
+  const prec = actualSrc.endsWith('.fp32.onnx') ? 'fp32' : 'fp16';
+  log(`copied tail model: ${actualSrc} → ${dst} (${(size / 1024).toFixed(1)} KB, ${prec}, sha256=${hash.slice(0, 16)}…)`);
+  return {
+    type: 'custom-tail',
+    name: 'meiban-ocr-tail.onnx',
+    source: actualSrc.split('/').pop(),
+    relpath: 'model/custom/meiban-ocr-tail.onnx',
+    size,
+    hash,
+    precision: prec,
+    format: 'crnn-ctc-tail4',
+  };
+}
+
 function copyPaddleModels() {
   const detSrc = resolve(repoRoot, 'models/ppocrv4_det.onnx');
   const recSrc = resolve(repoRoot, 'models/ppocrv4_rec.onnx');
@@ -212,6 +247,12 @@ function writeInstallGuide(backends) {
     : '/assets/meiban-ocr/model/custom/meiban-ocr-crnn.onnx';
   const customSizeMB = custom ? (custom.size / 1024 / 1024).toFixed(1) : '?';
   const customFmt = custom ? custom.format : 'crnn-ctc';
+  const tail = backends.find(b => b && b.type === 'custom-tail');
+  const tailLines = tail
+    ? `  tailModelUrl: '/assets/meiban-ocr/${tail.relpath}',  // 末尾2nd-pass (pos10/11 対策, E2E +0.9pt)
+  tailConfidence: 0.9,
+`
+    : '';
   const md = `# URANUS2 への統合手順
 
 このディレクトリ (\`dist-uranus2/\`) は **meiban-ocr の URANUS2 統合用ローカル成果物** です。
@@ -252,7 +293,7 @@ const detector = await createPaddleDetDetector({
 const ocr = await MeibanOCR.create({
   backend: 'custom',
   modelUrl: '${customUrl}',
-  vendor: 'ericsson',
+${tailLines}  vendor: 'ericsson',
   detector,            // ★ paddle det 検出 → custom CRNN 認識(ハイブリッド)
   prefilter: false,    // paddle det の box をそのまま使う
   recenter: false,
@@ -339,7 +380,7 @@ function main() {
   clean();
   buildRuntime();
   copyRuntime();
-  const backends = [copyCustomModel(), copyPaddleModels()];
+  const backends = [copyCustomModel(), copyTailModel(), copyPaddleModels()];
   writeManifest(backends);
   writeInstallGuide(backends);
   summarize(backends);

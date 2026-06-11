@@ -14,6 +14,7 @@ import {
   ctcGreedyDecode,
   ctcGreedyDecodeWithConfidence,
   fixedHeadDecodeWithConfidence,
+  mergeTailRead,
   preprocessText,
 } from '../src/decoder';
 import { ericsson } from '../src/vendors';
@@ -277,5 +278,37 @@ describe('fixedHeadDecodeWithConfidence', () => {
     expect(() =>
       fixedHeadDecodeWithConfidence(tiny, FIXED_LENGTH, NUM_CLASSES_12H),
     ).toThrow();
+  });
+});
+
+describe('ctcGreedyDecodeWithConfidence charTimesteps', () => {
+  it('各出力文字の emission timestep を返す', () => {
+    // T=6, C=37。blank=36。 t=1 で 'A'(10), t=2 も 'A'(collapse), t=4 で 'B'(11)
+    const T = 6, C = 37;
+    const logits = new Float32Array(T * C).fill(0);
+    const set = (t: number, c: number) => { logits[t * C + c] = 10; };
+    set(0, 36); set(1, 10); set(2, 10); set(3, 36); set(4, 11); set(5, 36);
+    const r = ctcGreedyDecodeWithConfidence(logits, T, C);
+    expect(r.text).toBe('AB');
+    expect(r.charTimesteps).toEqual([1, 4]);
+  });
+});
+
+describe('mergeTailRead', () => {
+  it('アンカー一致 + 高conf なら末尾2文字を差し替える', () => {
+    expect(mergeTailRead('E325MM500759', '0751', 0.99, 0.9)).toBe('E325MM500751');
+  });
+  it('アンカー不一致なら full のまま', () => {
+    expect(mergeTailRead('E325MM500759', '9951', 0.99, 0.9)).toBe('E325MM500759');
+  });
+  it('conf 不足なら full のまま', () => {
+    expect(mergeTailRead('E325MM500759', '0751', 0.5, 0.9)).toBe('E325MM500759');
+  });
+  it('長さ不正 (full≠12 / tail≠4) なら full のまま', () => {
+    expect(mergeTailRead('E325MM50075', '0751', 0.99, 0.9)).toBe('E325MM50075');
+    expect(mergeTailRead('E325MM500759', '751', 0.99, 0.9)).toBe('E325MM500759');
+  });
+  it('差し替え不要 (一致) でもそのまま通る', () => {
+    expect(mergeTailRead('E325MM500751', '0751', 0.99, 0.9)).toBe('E325MM500751');
   });
 });
