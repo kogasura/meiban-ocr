@@ -1,0 +1,30 @@
+# 末尾 2nd-pass 専用モデル: 右端4セル crop (1文字≈3倍解像度) から末尾4桁を読む。
+# 仮説検証フェーズなので精度最優先で CRNNPretrained。採用時にサイズ最適化を検討。
+# 負例なし (適用は「発火済み box + アンカー照合一致」に限られ誤適用ガードがあるため)。
+data:
+  root: data/recognition_tail
+  vendor: ericsson
+  labels_filename: labels.tsv
+  resize_mode: stretch
+model:
+  num_classes: 37
+  rnn_hidden: 128
+  rnn_layers: 2
+  dropout: 0.1
+  arch: crnn_pretrained
+  pretrained_weight: models/pretrained/clovaai-crnn-vgg.pth
+train:
+  batch_size: 64
+  epochs: 50
+  lr_backbone: 0.0001
+  lr_head: 0.001
+  weight_decay: 0.0001
+  num_workers: 4
+  freeze_backbone_epochs: 2
+  early_stopping_patience: 15
+  confidence_threshold: 0.7
+runtime:
+  device: cuda
+  seed: 42
+output:
+  runs_dir: runs

@@ -79,6 +79,27 @@ def load_predictor(model_path: Path, resize_mode_override: str | None = None):
         full_cfg = ckpt.get("config", {})
         cfg = full_cfg.get("model", {})
         resize_mode = resize_mode_override or full_cfg.get("data", {}).get("resize_mode", "stretch")
+        if cfg.get("arch") == "tiny":
+            from meiban_ocr_trainer.models import TinyOCRModel
+            # ROCm の MIOpen GRU が特定形状で miopenStatusUnknownError を出すため
+            # native RNN にフォールバック (LSTM 系も native になるが正しさに影響なし)
+            if getattr(torch.version, "hip", None):
+                torch.backends.cudnn.enabled = False
+            model = TinyOCRModel(
+                num_classes=int(cfg.get("num_classes", 37)),
+                rnn_hidden=int(cfg.get("rnn_hidden", 128)),
+                rnn_layers=int(cfg.get("rnn_layers", 2)),
+                dropout=float(cfg.get("dropout", 0.1)),
+                pretrained=False,
+            )
+            model.load_state_dict(ckpt["model_state"])
+            model = model.to(dev).eval()
+
+            @torch.no_grad()
+            def predict(arrs):
+                x = torch.from_numpy(np.stack(arrs)[:, None, :, :].astype(np.float32)).to(dev)
+                return model(x).cpu().numpy()
+            return predict, "ctc", CTCTokenizer(), resize_mode
         if cfg.get("arch") == "crnn_attn":
             from meiban_ocr_trainer.models.crnn_attn import CRNNAttn
             from meiban_ocr_trainer.tokenizer import AttnTokenizer

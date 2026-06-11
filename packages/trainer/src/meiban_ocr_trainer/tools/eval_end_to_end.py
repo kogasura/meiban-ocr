@@ -75,9 +75,17 @@ def _test_serials(labels_path: Path, split: str) -> set[str]:
 def evaluate(crnn_pt: Path, det_model: Path, samples_dir: Path, annotations_dir: Path,
              labels_path: Path, split: str, cover_thresh: float, limit: int,
              det_long_side: int = 736, box_mode: str = "rect",
-             unclip_ratio: float = 1.6) -> dict:
+             unclip_ratio: float = 1.6,
+             tail_model: Path | None = None, tail_conf: float = 0.95) -> dict:
     test_serials = _test_serials(labels_path, split)
     predict, mt, tok, resize_mode = load_predictor(crnn_pt)
+    # 末尾 2nd-pass (quad モード専用): 12文字 read の box に対し、CTC アライメントで
+    # 末尾4文字領域を再 crop → 専用モデルで再読 → アンカー一致 & conf>=tail_conf で
+    # 末尾2文字を差し替える。clean test 実測 +1.1〜1.3pt (eval_tail_second_pass)。
+    t_predict = t_tok = t_mt = None
+    t_resize = resize_mode
+    if tail_model is not None:
+        t_predict, t_mt, t_tok, t_resize = load_predictor(tail_model)
     sess = ort.InferenceSession(str(det_model), providers=["CPUExecutionProvider"])
     in_name = sess.get_inputs()[0].name
     out_name = sess.get_outputs()[0].name
@@ -166,6 +174,26 @@ def evaluate(crnn_pt: Path, det_model: Path, samples_dir: Path, annotations_dir:
             logits = predict(arrs)
             decoded = _decode_logits(mt, tok, logits)  # [(text,conf)]
             box_texts = [_norm(t) for t, _ in decoded]
+            if t_predict is not None and box_mode == "quad":
+                from meiban_ocr_trainer.tools.eval_tail_second_pass import (
+                    alignment_tail_crop,
+                )
+                t_arrs, owners = [], []
+                for bi, txt in enumerate(box_texts):
+                    if len(txt) != 12 or crops[bi] is None:
+                        continue
+                    tc = alignment_tail_crop(crops[bi], logits[bi], 4)
+                    if tc is not None:
+                        t_arrs.append(normalize_crop(tc, t_resize))
+                        owners.append(bi)
+                if t_arrs:
+                    t_dec = _decode_logits(t_mt, t_tok, t_predict(t_arrs))
+                    for o, (tt, tc_conf) in zip(owners, t_dec):
+                        tt = _norm(tt)
+                        full = box_texts[o]
+                        if (len(tt) == 4 and float(tc_conf) >= tail_conf
+                                and tt[:2] == full[8:10]):
+                            box_texts[o] = full[:10] + tt[2:]
         else:
             box_texts = []
 
@@ -218,6 +246,8 @@ def evaluate(crnn_pt: Path, det_model: Path, samples_dir: Path, annotations_dir:
         "det_long_side": det_long_side,
         "box_mode": box_mode,
         "unclip_ratio": unclip_ratio if box_mode == "quad" else None,
+        "tail_model": str(tail_model) if tail_model else None,
+        "tail_conf": tail_conf if tail_model else None,
         "resize_mode": resize_mode, "cover_thresh": cover_thresh,
         "n_images": n_images, "n_gt_testserial_regions": n_gt,
         "n_det_boxes": n_det_boxes,
@@ -251,13 +281,16 @@ def main(argv=None) -> int:
     p.add_argument("--box-mode", choices=["rect", "quad"], default="rect",
                    help="rect=現行(CC→axis-aligned bbox) / quad=本家準拠(minAreaRect→回転矯正crop)")
     p.add_argument("--unclip-ratio", type=float, default=1.6, help="quad モードの unclip 倍率")
+    p.add_argument("--tail-model", type=Path, default=None,
+                   help="末尾2nd-pass 専用モデル (.pt)。quad モードでのみ有効")
+    p.add_argument("--tail-conf", type=float, default=0.95)
     p.add_argument("--limit", type=int, default=0, help="評価画像数上限 (0=全件)")
     p.add_argument("--json", type=Path, default=None)
     args = p.parse_args(argv)
 
     res = evaluate(args.crnn, args.det, args.samples_dir, args.annotations_dir,
                    args.labels, args.split, args.cover_thresh, args.limit, args.det_long_side,
-                   args.box_mode, args.unclip_ratio)
+                   args.box_mode, args.unclip_ratio, args.tail_model, args.tail_conf)
     print(json.dumps({k: v for k, v in res.items()
                       if k not in ("miss_examples", "rec_fail_examples")},
                      ensure_ascii=False, indent=2))

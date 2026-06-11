@@ -160,6 +160,12 @@ def evaluate_split(
 
 
 def train_loop(cfg: dict, output_dir: Path) -> dict:
+    import os
+    if os.environ.get("MEIBAN_DISABLE_MIOPEN_RNN"):
+        # ROCm の MIOpen GRU が特定形状で miopenStatusUnknownError を出す
+        # (tiny arch の MobileNetV3+GRU で再現、LSTM 系は無事)。native RNN に逃がす。
+        torch.backends.cudnn.enabled = False
+        print("[train] MIOpen RNN disabled (MEIBAN_DISABLE_MIOPEN_RNN)", file=sys.stderr)
     device = torch.device(cfg["runtime"].get("device", "cpu"))
     torch.manual_seed(int(cfg["runtime"].get("seed", 42)))
     tokenizer = CTCTokenizer()
