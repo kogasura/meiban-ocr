@@ -84,7 +84,9 @@ export interface CustomBackendInit extends CommonBackendOptions {
    * 領域を再 crop → このモデルで再読 → アンカー一致 & 高 confidence のときだけ
    * 末尾2文字を差し替える。誤読の95%が集中する pos10/11 への対策
    * (held-out 実測: clean EM +1.26pt / E2E +0.92pt / 偽発火も微減、新規発火なし)。
-   * 未指定なら 2nd-pass 無効 (従来挙動)。
+   * - `'self'`: full モデルと同一セッションで 2nd-pass を実行 (マルチタスク訓練
+   *   モデル v11+ 用)。2本目のセッションを作らないためメモリ増ゼロ。
+   * - 未指定なら 2nd-pass 無効 (従来挙動)。
    */
   tailModelUrl?: string;
   /** 末尾 2nd-pass モデルのバイト列 (URL の代替)。 */

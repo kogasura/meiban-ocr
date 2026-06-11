@@ -247,12 +247,19 @@ function writeInstallGuide(backends) {
     : '/assets/meiban-ocr/model/custom/meiban-ocr-crnn.onnx';
   const customSizeMB = custom ? (custom.size / 1024 / 1024).toFixed(1) : '?';
   const customFmt = custom ? custom.format : 'crnn-ctc';
+  // v11 以降の real モデルはマルチタスク (full + tail) 訓練なので、2nd-pass は
+  // 同一セッション再利用 ('self') が既定。別 tail モデル (+109MB) は不要。
+  const realVersion = custom ? parseInt((/real-v(\d+)/.exec(custom.source ?? '') ?? [])[1] ?? '0', 10) : 0;
   const tail = backends.find(b => b && b.type === 'custom-tail');
-  const tailLines = tail
-    ? `  tailModelUrl: '/assets/meiban-ocr/${tail.relpath}',  // 末尾2nd-pass (pos10/11 対策, E2E +0.9pt)
+  const tailLines = realVersion >= 11
+    ? `  tailModelUrl: 'self',  // 末尾2nd-pass を同一セッションで実行 (v11+ はマルチタスク訓練。メモリ増ゼロ)
+  tailConfidence: 0.98,
+`
+    : tail
+      ? `  tailModelUrl: '/assets/meiban-ocr/${tail.relpath}',  // 末尾2nd-pass (pos10/11 対策, E2E +0.9pt)
   tailConfidence: 0.9,
 `
-    : '';
+      : '';
   const md = `# URANUS2 への統合手順
 
 このディレクトリ (\`dist-uranus2/\`) は **meiban-ocr の URANUS2 統合用ローカル成果物** です。

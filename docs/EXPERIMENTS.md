@@ -64,5 +64,15 @@ fixed-head / CTC チューニング / attention の3系統が全て pos11 を動
 | **det後処理 quad化 (minAreaRect+透視変換crop)** | E2E rect@960 37.7→quad 65.9%、偽発火-45%。最大の勝ち手 | 06-10 |
 | **グリフ移植水増し (deskew+セル移植+MMアンカー検証)** | EM 90.4→91.35 / pos11 -20% / 回転8° +7.7 / E2E 78.4→80.6 | 06-10 |
 | **末尾 2nd-pass (CTCアライメント再crop+専用tailモデル, th=0.9)** | clean EM 91.27→92.53 / pos11 368→308 / E2E 80.6→81.56 / 偽発火も微減。新規発火を作らない構造 | 06-11 |
+| **v11 マルチタスク (full+tail crops 混合訓練、単一セッション)** | clean EM 93.1 / 回転8° 85.0 / E2E 82.1。tail専用セッション(+109MB)を排除しつつ全指標v10超え。2nd-pass は同一セッション (`tailModelUrl:'self'`, th=0.98) | 06-11 |
 
 配信: v10-crnn (fp32) + quad + detLongSide 1280 (2026-06-10)。旧構成 E2E 21.8% → 80.6%。
+
+## 実機クラッシュ/精度低下の調査知見 (06-11)
+
+- モバイルのメモリ: fp32 33MB モデル1本 ≈ セッション化で +100MB級 RSS。2本目(tail)が
+  +109MB でクラッシュ → v11 マルチタスク+同一セッション再利用で解決。
+- URANUS2 の `preprocessForOcr` (旧Tesseract用) を custom に通すと:
+  グレースケール+2倍アップサンプル = E2E −1.8pt (2倍化が detLongSide の縮小を誤爆させ
+  実効解像度を落とす)、**Otsu二値化 = E2E −44pt (壊滅)**。custom エンジンには
+  素のフレーム (等倍・カラー) を渡すこと。ハーネス `--sim-app-preprocess` で再現可能。

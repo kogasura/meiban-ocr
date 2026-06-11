@@ -76,7 +76,8 @@ def evaluate(crnn_pt: Path, det_model: Path, samples_dir: Path, annotations_dir:
              labels_path: Path, split: str, cover_thresh: float, limit: int,
              det_long_side: int = 736, box_mode: str = "rect",
              unclip_ratio: float = 1.6,
-             tail_model: Path | None = None, tail_conf: float = 0.95) -> dict:
+             tail_model: Path | None = None, tail_conf: float = 0.95,
+             sim_app_preprocess: str = "none") -> dict:
     test_serials = _test_serials(labels_path, split)
     predict, mt, tok, resize_mode = load_predictor(crnn_pt)
     # 末尾 2nd-pass (quad モード専用): 12文字 read の box に対し、CTC アライメントで
@@ -138,6 +139,19 @@ def evaluate(crnn_pt: Path, det_model: Path, samples_dir: Path, annotations_dir:
             n_images -= 1
             break
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        sim_scale = 1
+        if sim_app_preprocess != "none":
+            # URANUS2 preprocessForOcr の再現: Rec.601 グレースケール + 2倍アップサンプル
+            # (+ binarize 時は Otsu 二値化)。実機の入力分布での E2E を測るため。
+            g = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)  # cv2 は Rec.601 係数
+            if sim_app_preprocess == "binarize2x":
+                _, g = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                if (g == 0).mean() > 0.5:
+                    g = 255 - g
+            g = cv2.resize(g, (g.shape[1] * 2, g.shape[0] * 2),
+                           interpolation=cv2.INTER_LINEAR)
+            rgb = cv2.cvtColor(g, cv2.COLOR_GRAY2RGB)
+            sim_scale = 2  # det box は 2x 座標になるので GT も 2x で照合する
         oh, ow = rgb.shape[:2]
         seg = sess.run([out_name], {in_name: preprocess_for_det(rgb, det_long_side)})[0]
         seg_map = np.asarray(seg)[0, 0].astype(np.float32)
@@ -206,6 +220,8 @@ def evaluate(crnn_pt: Path, det_model: Path, samples_dir: Path, annotations_dir:
         for gt_box, gt_text in gt_regions:
             n_gt += 1
             gt_h = gt_box[3] - gt_box[1]
+            if sim_scale != 1:
+                gt_box = [c * sim_scale for c in gt_box]
             hb = _hbin(gt_h)
             by_h[hb]["n"] += 1
             # 本番に忠実: det は全 box を rec して serial 集合を出力する。
@@ -284,13 +300,16 @@ def main(argv=None) -> int:
     p.add_argument("--tail-model", type=Path, default=None,
                    help="末尾2nd-pass 専用モデル (.pt)。quad モードでのみ有効")
     p.add_argument("--tail-conf", type=float, default=0.95)
+    p.add_argument("--sim-app-preprocess", choices=["none", "gray2x", "binarize2x"],
+                   default="none", help="URANUS2 の前処理を再現して実機入力分布で測る")
     p.add_argument("--limit", type=int, default=0, help="評価画像数上限 (0=全件)")
     p.add_argument("--json", type=Path, default=None)
     args = p.parse_args(argv)
 
     res = evaluate(args.crnn, args.det, args.samples_dir, args.annotations_dir,
                    args.labels, args.split, args.cover_thresh, args.limit, args.det_long_side,
-                   args.box_mode, args.unclip_ratio, args.tail_model, args.tail_conf)
+                   args.box_mode, args.unclip_ratio, args.tail_model, args.tail_conf,
+                   args.sim_app_preprocess)
     print(json.dumps({k: v for k, v in res.items()
                       if k not in ("miss_examples", "rec_fail_examples")},
                      ensure_ascii=False, indent=2))

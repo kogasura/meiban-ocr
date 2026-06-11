@@ -81,7 +81,11 @@ export class CustomBackend implements Backend {
       graphOptimizationLevel: 'all',
     };
     // バンドル ONNX のデフォルト URL (Vite/Webpack の ?url import で解決)。
-    const defaultUrl = (await import('../assets/meiban-ocr-v1.onnx?url')).default;
+    // modelUrl/Bytes 指定時は import しない (base64 chunk ~1.7MB をメモリに載せない)。
+    const defaultUrl =
+      options.modelBytes || options.modelUrl
+        ? undefined
+        : (await import('../assets/meiban-ocr-v1.onnx?url')).default;
     const session = await createOrtSession(
       options.modelBytes,
       options.modelUrl,
@@ -90,8 +94,12 @@ export class CustomBackend implements Backend {
       'modelUrl',
     );
     // 末尾 2nd-pass モデル (オプション)。未指定なら従来挙動。
+    // 'self' = full モデルと同一セッションを再利用 (マルチタスク訓練モデル v11+ 用)。
+    // 2本目のセッション (~+109MB) を作らないのでモバイルのメモリに優しい。
     let tailSession: ort.InferenceSession | null = null;
-    if (options.tailModelBytes || options.tailModelUrl) {
+    if (options.tailModelUrl === 'self') {
+      tailSession = session;
+    } else if (options.tailModelBytes || options.tailModelUrl) {
       tailSession = await createOrtSession(
         options.tailModelBytes,
         options.tailModelUrl,
@@ -276,7 +284,10 @@ export class CustomBackend implements Backend {
 
   async dispose(): Promise<void> {
     await this.session.release();
-    if (this.tailSession) await this.tailSession.release();
+    // 'self' 共有時は同一セッションなので二重 release しない
+    if (this.tailSession && this.tailSession !== this.session) {
+      await this.tailSession.release();
+    }
   }
 }
 
