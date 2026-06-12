@@ -1,6 +1,6 @@
 {
   "name": "@meiban-ocr/runtime",
-  "version": "0.4.0-internal",
+  "version": "0.4.2-internal",
   "private": true,
   "description": "Internal-only OCR runtime. Distributed by URANUS2 deployment, NOT via npm.",
   "license": "UNLICENSED",

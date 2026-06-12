@@ -24,6 +24,9 @@ const DET_DEFAULT_LIMIT = 960;
 const REC_TARGET_H = 48;
 const REC_MAX_W = 320;
 
+// preprocessForDet 用スクラッチ (同一解像度の連続フレームで再利用)
+let detScratch: Float32Array | null = null;
+
 export interface DetPreprocessResult {
   /** Float32 RGB CHW, shape [1, 3, H, W] (H, W は 32 倍数化済) */
   tensor: Float32Array;
@@ -56,7 +59,18 @@ export function preprocessForDet(
   const scaleX = newW / origW;
   const scaleY = newH / origH;
 
-  const tensor = new Float32Array(3 * newH * newW);
+  // カメラ解像度は一定なのでスクラッチを再利用 (毎フレーム ~11MB@1280 の churn を排除)。
+  // 注意: ort.env.wasm.proxy=true だと入力バッファが transfer され detach するため、
+  // detach 検出時は再確保する。
+  const need = 3 * newH * newW;
+  if (
+    detScratch === null ||
+    detScratch.length !== need ||
+    detScratch.buffer.byteLength === 0
+  ) {
+    detScratch = new Float32Array(need);
+  }
+  const tensor = detScratch;
 
   // 双線形補間でリサイズ + 正規化を一度に行う (Float32 → CHW)。
   for (let dy = 0; dy < newH; dy++) {

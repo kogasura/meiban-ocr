@@ -16,7 +16,7 @@
 
 import * as ort from 'onnxruntime-web';
 
-import { FIXED_LENGTH, NUM_CLASSES, NUM_CLASSES_12H } from '../constants';
+import { FIXED_LENGTH, NUM_CLASSES, NUM_CLASSES_12H, RUNTIME_VERSION } from '../constants';
 import {
   applyCorrectionPipeline,
   ctcGreedyDecodeWithConfidence,
@@ -108,10 +108,29 @@ export class CustomBackend implements Backend {
         'tailModelUrl',
       );
     }
+    // ビルド指紋: 実機で「どのビルド・どの構成が動いているか」を console から確定させる
+    console.info(
+      `[meiban-ocr] custom backend ready (runtime=${RUNTIME_VERSION} eps=${eps.join(',')} ` +
+      `tail=${options.tailModelUrl === 'self' ? 'self' : tailSession ? 'separate' : 'off'} ` +
+      `maxBatch=${options.maxBatchSize ?? 64})`,
+    );
     return new CustomBackend(session, tailSession, detector, vendor, options);
   }
 
+  // recognize の重ね呼び (await されない rAF ループ等) で前処理バッファが滞留しないよう
+  // ライブラリ側でも直列化する。アプリ側のガードがあれば実質 no-op。
+  private inflight: Promise<OCRResult[]> = Promise.resolve([]);
+
   async recognize(imageData: ImageData): Promise<OCRResult[]> {
+    const next = this.inflight.then(
+      () => this.recognizeSerial(imageData),
+      () => this.recognizeSerial(imageData),
+    );
+    this.inflight = next.catch(() => []);
+    return next;
+  }
+
+  private async recognizeSerial(imageData: ImageData): Promise<OCRResult[]> {
     const boxesRaw = await this.detector(imageData);
     if (boxesRaw.length === 0) return [];
 
@@ -119,7 +138,11 @@ export class CustomBackend implements Backend {
     // Phase 2a 実証: pos recall 100% 維持 + 窓数 ~半減 + 推論時間 ~半減。
     // 判定は axis-aligned bbox で行い、quad つき box は quad を保持したまま残す。
     let boxes: readonly DetBox[] = boxesRaw;
-    if (this.prefilterOption !== false) {
+    // QuadBox (= 学習済み det 由来) には古典 CV prefilter は不要なので自動スキップ。
+    // prefilter はフル解像度の Float32Array を ~12 本確保する (1080p で ~100MB/フレーム)
+    // ため、設定し忘れがモバイルのメモリ事故になる。
+    const hasQuad = boxes.some((b) => detBoxQuad(b) !== undefined);
+    if (!hasQuad && this.prefilterOption !== false) {
       const pfOpts: PrefilterOptions =
         this.prefilterOption && typeof this.prefilterOption === 'object'
           ? this.prefilterOption
@@ -282,11 +305,21 @@ export class CustomBackend implements Backend {
     }
   }
 
+  private disposed = false;
+
   async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposed = true;
     await this.session.release();
     // 'self' 共有時は同一セッションなので二重 release しない
     if (this.tailSession && this.tailSession !== this.session) {
       await this.tailSession.release();
+    }
+    // detector が dispose を持つ場合 (createPaddleDetDetector) は連鎖解放。
+    // det セッションは実測 +170〜270MB あり、解放経路が無いと再マウント毎にリークする。
+    const d = this.detector as { dispose?: () => Promise<void> };
+    if (typeof d.dispose === 'function') {
+      await d.dispose();
     }
   }
 }

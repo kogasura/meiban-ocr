@@ -47,12 +47,21 @@ export interface PaddleDetDetectorOptions {
   unclipRatio?: number;
 }
 
+/** dispose 可能な DetectorFn。CustomBackend.dispose() が連鎖して呼ぶ。 */
+export interface DisposableDetectorFn extends DetectorFn {
+  dispose?: () => Promise<void>;
+}
+
 /**
  * paddle det を非同期 DetectorFn に変換する。 内部で det 用 ORT session を1つ生成する。
+ *
+ * 返り値には dispose() が生えており、CustomBackend.dispose() から連鎖解放される。
+ * Why: det セッション (wasm ヒープ内で実測 +170〜270MB) に解放経路が無いと、
+ * React 再マウント (StrictMode の二重 effect 含む) のたびに永久リークする。
  */
 export async function createPaddleDetDetector(
   options: PaddleDetDetectorOptions,
-): Promise<DetectorFn> {
+): Promise<DisposableDetectorFn> {
   if (!options.detModelUrl && !options.detModelBytes) {
     throw new Error(
       'createPaddleDetDetector: detModelUrl or detModelBytes required',
@@ -73,8 +82,11 @@ export async function createPaddleDetDetector(
   const unclipRatio = options.unclipRatio ?? 1.6;
   const inputName = session.inputNames[0]!;
   const outputName = session.outputNames[0]!;
+  console.info(
+    `[meiban-ocr] paddle-det ready (eps=${eps.join(',')} detLongSide=${detLongSide} boxMode=${boxMode})`,
+  );
 
-  return async (image: ImageData): Promise<readonly DetBox[]> => {
+  const fn: DisposableDetectorFn = async (image: ImageData): Promise<readonly DetBox[]> => {
     const det = preprocessForDet(image, detLongSide);
     const tensor = new ort.Tensor('float32', det.tensor, [1, 3, det.height, det.width]);
     const out = await session.run({ [inputName]: tensor });
@@ -95,4 +107,11 @@ export async function createPaddleDetDetector(
           seg.data as Float32Array, segH, segW, image.height, image.width, dbOpts,
         );
   };
+  let released = false;
+  fn.dispose = async () => {
+    if (released) return;
+    released = true;
+    await session.release();
+  };
+  return fn;
 }

@@ -4,6 +4,10 @@
  */
 
 // ===== CTC architecture (旧、CRNN+CTC, npm 0.3.x まで) =====
+// ビルド指紋: 実機 console で「どのビルドが動いているか」を確定させるために
+// セッション生成時に必ずログする。package.json の version と手動同期。
+export const RUNTIME_VERSION = '0.4.2-internal';
+
 export const CHARSET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ' as const;
 export const BLANK_IDX = 36;
 export const NUM_CLASSES = 37;

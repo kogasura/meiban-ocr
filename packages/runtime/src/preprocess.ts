@@ -157,9 +157,23 @@ export function imageInputToImageData(image: ImageInput): ImageData {
     if (!ctx) throw new Error('Failed to get 2D context from HTMLCanvasElement');
     return ctx.getImageData(0, 0, image.width, image.height);
   }
-  // ImageBitmap: draw to a fresh canvas
-  const canvas = makeCanvas(image.width, image.height);
-  const ctx = canvas.getContext('2d') as
+  // ImageBitmap: 変換用 canvas は1枚をモジュールで使い回す。
+  // 毎フレーム新規 canvas を作ると iOS Safari の canvas backing store 予算を
+  // 食い潰す (crop 経路の canvas 全廃と同じ理由)。サイズ変更は width/height
+  // 再設定で backing store を再利用する。
+  if (
+    bitmapCanvas === null ||
+    bitmapCanvas.width !== image.width ||
+    bitmapCanvas.height !== image.height
+  ) {
+    if (bitmapCanvas === null) {
+      bitmapCanvas = makeCanvas(image.width, image.height);
+    } else {
+      bitmapCanvas.width = image.width;
+      bitmapCanvas.height = image.height;
+    }
+  }
+  const ctx = bitmapCanvas.getContext('2d', { willReadFrequently: true }) as
     | CanvasRenderingContext2D
     | OffscreenCanvasRenderingContext2D
     | null;
@@ -167,6 +181,9 @@ export function imageInputToImageData(image: ImageInput): ImageData {
   ctx.drawImage(image as unknown as CanvasImageSource, 0, 0);
   return ctx.getImageData(0, 0, image.width, image.height);
 }
+
+// ImageBitmap → ImageData 変換用の使い回し canvas
+let bitmapCanvas: HTMLCanvasElement | OffscreenCanvas | null = null;
 
 export interface CropOptions {
   /**
@@ -227,8 +244,8 @@ export function cropResizeGrayNormalize(
   const cw = x2 - x1;
   const ch = y2 - y1;
 
-  // 1) 領域を gray (Rec.709) の Float 行列へ
-  const gray = new Float32Array(cw * ch);
+  // 1) 領域を gray (Rec.709) の Float 行列へ (box 毎 churn 回避のためスクラッチ再利用)
+  const gray = scratchF32(cw * ch, 0);
   for (let y = 0; y < ch; y++) {
     let si = ((y1 + y) * srcW + x1) * 4;
     let di = y * cw;
@@ -239,8 +256,11 @@ export function cropResizeGrayNormalize(
   }
 
   // 2) 分離型リサイズ: 横 cw→INPUT_WIDTH、縦 ch→INPUT_HEIGHT
-  const horiz = resizeAxis(gray, cw, ch, INPUT_WIDTH, true);
-  const resized = resizeAxis(horiz, INPUT_WIDTH, ch, INPUT_HEIGHT, false);
+  const horiz = resizeAxis(gray, cw, ch, INPUT_WIDTH, true, scratchF32(INPUT_WIDTH * ch, 1));
+  const resized = resizeAxis(
+    horiz, INPUT_WIDTH, ch, INPUT_HEIGHT, false,
+    scratchF32(INPUT_WIDTH * INPUT_HEIGHT, 2),
+  );
 
   // 3) 正規化
   const out = new Float32Array(INPUT_HEIGHT * INPUT_WIDTH);
@@ -260,10 +280,11 @@ function resizeAxis(
   srcH: number,
   outLen: number,
   horizontal: boolean,
+  dstScratch?: Float32Array,
 ): Float32Array {
   const srcLen = horizontal ? srcW : srcH;
   const lines = horizontal ? srcH : srcW;
-  const dst = new Float32Array(outLen * lines);
+  const dst = dstScratch ?? new Float32Array(outLen * lines);
   const scale = srcLen / outLen;
 
   const srcAt = horizontal
@@ -345,7 +366,7 @@ export function warpQuadToImage(
     readonly [number, number],
     readonly [number, number],
   ],
-): { data: Uint8ClampedArray<ArrayBuffer>; width: number; height: number } {
+): { data: Uint8ClampedArray; width: number; height: number } {
   const [tl, tr, br, bl] = quad;
   const dist = (a: readonly [number, number], b: readonly [number, number]) =>
     Math.hypot(a[0] - b[0], a[1] - b[1]);
@@ -392,7 +413,10 @@ export function warpQuadToImage(
   const sw = src.width;
   const sh = src.height;
   const sdata = src.data;
-  let warped = new Uint8ClampedArray(w * h * 4);
+  // box 毎の churn を避けるためスクラッチを再利用 (最大 1024×256×4 = 1MB)。
+  // 返り値のバッファは次の warpQuadToImage / 90°回転で上書きされるため、
+  // 呼び出し側は次の呼び出し前に消費すること (現行の全呼び出し元は即時消費)。
+  let warped = scratchU8(w * h * 4, 0);
   for (let y = 0; y < h; y++) {
     const v = (y + 0.5) / h;
     for (let x = 0; x < w; x++) {
@@ -424,7 +448,7 @@ export function warpQuadToImage(
 
   // 縦長 crop は 90° 回転 (np.rot90 と同じ反時計回り; 縦配置テキスト対応)
   if (h / w >= 1.5) {
-    const rot = new Uint8ClampedArray(w * h * 4);
+    const rot = scratchU8(w * h * 4, 1);
     // rot[i][j] = warped[j][w-1-i] (出力は h'=w 行 × w'=h 列)
     for (let i = 0; i < w; i++) {
       for (let j = 0; j < h; j++) {
@@ -464,6 +488,29 @@ export function cropAndNormalizeBatch(
     out.set(single, n * stride);
   }
   return out;
+}
+
+// ===== スクラッチプール =====
+// 容量がピークに達したら以後再利用 (wasm と違い TypedArray は GC 可能だが、
+// 毎フレーム数十MB の churn は iOS の GC が追いつかずピーク RSS を押し上げる)。
+// slot 分けで「同一呼び出し内で2本同時に使う」ケースの衝突を防ぐ。
+const f32Pool: Array<Float32Array | null> = [null, null, null];
+const u8Pool: Array<Uint8ClampedArray | null> = [null, null];
+
+function scratchF32(n: number, slot: number): Float32Array {
+  const cur = f32Pool[slot];
+  if (cur && cur.length >= n) return cur.subarray(0, n) as Float32Array;
+  const buf = new Float32Array(n);
+  f32Pool[slot] = buf;
+  return buf;
+}
+
+function scratchU8(n: number, slot: number): Uint8ClampedArray {
+  const cur = u8Pool[slot];
+  if (cur && cur.length >= n) return cur.subarray(0, n) as Uint8ClampedArray;
+  const buf = new Uint8ClampedArray(n);
+  u8Pool[slot] = buf;
+  return buf;
 }
 
 function makeCanvas(w: number, h: number): HTMLCanvasElement | OffscreenCanvas {
