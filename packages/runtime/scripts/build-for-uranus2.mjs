@@ -137,6 +137,16 @@ function copyCustomModel() {
   const hash = fileSha256(dst);
   const prec = actualSrc.endsWith('.fp32.onnx') ? 'fp32' : 'fp16';
   log(`copied custom model: ${actualSrc} → ${dst} (${(size / 1024).toFixed(1)} KB, ${prec}, sha256=${hash.slice(0, 16)}…)`);
+  // モバイル(メモリ制約)用に fp16 兄弟も同梱する。wasm EP なら fp16 で安全に動き、
+  // セッション定常メモリが fp32 比 ~-50MB (実測 209→160MB)。WebGPU では使わないこと
+  // (iOS Safari shader-f16 クラッシュ)。
+  const fp16Sibling = src.replace(/\.onnx$/, '.fp16.onnx');
+  const fp16Src = existsSync(fp16Sibling) ? fp16Sibling : (src.endsWith('.fp16.onnx') ? src : null);
+  if (fp16Src && fp16Src !== actualSrc) {
+    const fp16Dst = resolve(outDir, 'model', 'custom', dstName.replace(/\.onnx$/, '.fp16.onnx'));
+    copyFileSync(fp16Src, fp16Dst);
+    log(`copied custom model (fp16 for mobile): ${fp16Src} → ${fp16Dst}`);
+  }
   return {
     type: 'custom',
     name: dstName,
@@ -314,6 +324,37 @@ const results = await ocr.recognize(cameraFullFrame);
 > reticle(ユーザーが1枚を枠に収める)UX の場合のみ、 detector を full-frame
 > \`(img) => [[0, 0, img.width, img.height]]\` にし、 アプリ側で reticle 枠内だけを crop して渡す。
 > ※ カメラのフルフレームを full-frame detector に渡すと全景が潰れて不発火するので注意。
+\`\`\`
+
+### モバイル(メモリ制約)プロファイル
+
+iOS Safari / WKWebView では ORT セッションの wasm ヒープが大きく、実測 (node ort-web,
+settle RSS): rec fp32=+209MB / rec fp16=+160MB、det@1280=+268MB / @960=+219MB / @640=+171MB。
+fp32+1280 の2セッション (~477MB) はモバイルでメモリ kill される。以下のプロファイルを推奨:
+
+\`\`\`tsx
+const detector = await createPaddleDetDetector({
+  detModelUrl: '/assets/meiban-ocr/model/paddle/ppocrv4_det.onnx',
+  executionProviders: ['wasm'],   // WebGPU 併用はバッファ二重持ちの恐れ。wasm 固定
+  detLongSide: 640,               // reticle UX (銘板が画面大) なら 640 で十分。余裕があれば 960
+});
+const ocr = await MeibanOCR.create({
+  backend: 'custom',
+  modelUrl: '/assets/meiban-ocr/model/custom/meiban-ocr-crnn.fp16.onnx',  // fp16 (wasm なら安全)
+  vendor: 'ericsson',
+  detector,
+  prefilter: false,
+  recenter: false,
+  maxBatchSize: 8,                // バッチ大は conv の作業バッファが肥大 (B=64 で +64MB)
+  minConfidence: 0.5,
+  tailModelUrl: 'self',
+  tailConfidence: 0.98,
+  executionProviders: ['wasm'],
+});
+\`\`\`
+
+> 注意: fp16 モデルを WebGPU で動かさないこと (iOS Safari の shader-f16 未対応でクラッシュ)。
+> wasm EP なら fp16 は安全 (読み一致を確認済み)。
 \`\`\`
 
 ### 例: Paddle backend (PP-OCRv4、 訓練不要、 大きめ)
