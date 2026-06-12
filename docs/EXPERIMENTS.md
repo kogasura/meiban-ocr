@@ -76,3 +76,8 @@ fixed-head / CTC チューニング / attention の3系統が全て pos11 を動
   グレースケール+2倍アップサンプル = E2E −1.8pt (2倍化が detLongSide の縮小を誤爆させ
   実効解像度を落とす)、**Otsu二値化 = E2E −44pt (壊滅)**。custom エンジンには
   素のフレーム (等倍・カラー) を渡すこと。ハーネス `--sim-app-preprocess` で再現可能。
+- v11+self 適用後もクラッシュ継続 → 残りの主犯候補 = **crop 経路の canvas 乱費**
+  (box毎に canvas 2枚 + フレーム全体 putImageData = 毎秒数百 canvas。iOS Safari の
+  canvas 予算を食い潰し WebContent kill)。crop/warp/tail を純JS化して canvas 全廃
+  (b41f3c2)。Python 前処理とのパリティ MAE 0.0017。教訓: **ブラウザのホットパスで
+  canvas を作ってはいけない** (TypedArray は GC されるが canvas backing store は別予算)。
