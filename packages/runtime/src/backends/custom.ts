@@ -31,8 +31,8 @@ import {
 } from '../detectors/sliding-window';
 import { detBoxBBox, detBoxQuad, type DetBox, type DetectorFn } from '../detectors/types';
 import {
-  cropAndNormalize,
   cropAndNormalizeBatch,
+  cropResizeGrayNormalize,
   warpQuadToImage,
   type RecenterOptions,
 } from '../preprocess';
@@ -250,11 +250,11 @@ export class CustomBackend implements Backend {
       const t7 = r.charTimesteps[7]!;
       const x0 = Math.round(((t8 + t7) / 2 / r.numTimesteps) * warped.width);
       if (warped.width - x0 < 8) continue;
-      const wid = new ImageData(warped.data, warped.width, warped.height);
       jobs.push({
         idx: i,
-        input: cropAndNormalize(
-          wid, [x0, 0, warped.width, warped.height], { recenter: false },
+        input: cropResizeGrayNormalize(
+          warped.data, warped.width, warped.height,
+          [x0, 0, warped.width, warped.height],
         ),
       });
     }

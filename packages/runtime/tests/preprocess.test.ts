@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { recenterBbox, warpQuadToImage } from '../src/preprocess';
+import { cropResizeGrayNormalize, recenterBbox, warpQuadToImage } from '../src/preprocess';
 
 /** ImageData polyfill (Node.js テスト環境用、prefilter.test.ts と同じパターン)。 */
 function makeImageData(width: number, height: number, data: Uint8ClampedArray): ImageData {
@@ -232,5 +232,60 @@ describe('warpQuadToImage', () => {
     expect(out.width).toBe(50);
     expect(out.height).toBe(30);
     expect(out.data[0]).toBe(200); // 範囲外も replicate された一様値
+  });
+});
+
+describe('cropResizeGrayNormalize (canvas-free crop 経路)', () => {
+  it('一様画像は一様な正規化値になる', () => {
+    const img = makeUniformGray(300, 80, 255); // 白
+    const out = cropResizeGrayNormalize(img.data, 300, 80, [10, 10, 280, 70]);
+    expect(out.length).toBe(32 * 128);
+    // 白 = (1.0 - 0.5)/0.5 = 1.0
+    for (const v of [out[0], out[2000], out[4095]]) {
+      expect(v).toBeCloseTo(1.0, 4);
+    }
+  });
+
+  it('縮小は面積平均 (2x2市松の2倍縮小 = 中間グレー)', () => {
+    // 256x64 の 1px 市松模様 → 128x32 に丁度 2x 縮小 → 全画素が (0+255+255+0)/4
+    const w = 256, h = 64;
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const v = (x + y) % 2 === 0 ? 0 : 255;
+        const i = (y * w + x) * 4;
+        data[i] = data[i + 1] = data[i + 2] = v;
+        data[i + 3] = 255;
+      }
+    }
+    const out = cropResizeGrayNormalize(data, w, h, [0, 0, w, h]);
+    // 平均127.5 → (127.5/255 - 0.5)/0.5 = 0
+    expect(out[0]).toBeCloseTo(0, 4);
+    expect(out[32 * 128 - 1]).toBeCloseTo(0, 4);
+  });
+
+  it('bbox が画像境界をはみ出しても例外を出さず有効領域で処理する', () => {
+    const img = makeUniformGray(100, 40, 128);
+    const out = cropResizeGrayNormalize(img.data, 100, 40, [-20, -10, 150, 60]);
+    expect(out.length).toBe(32 * 128);
+    expect(out[100]).toBeCloseTo((128 / 255 - 0.5) / 0.5, 3);
+  });
+
+  it('左右で異なる輝度のとき空間配置が保存される', () => {
+    // 左半分黒、右半分白
+    const w = 400, h = 100;
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const v = x < w / 2 ? 0 : 255;
+        const i = (y * w + x) * 4;
+        data[i] = data[i + 1] = data[i + 2] = v;
+        data[i + 3] = 255;
+      }
+    }
+    const out = cropResizeGrayNormalize(data, w, h, [0, 0, w, h]);
+    const row = 16;
+    expect(out[row * 128 + 10]).toBeCloseTo(-1.0, 3);  // 左 = 黒
+    expect(out[row * 128 + 118]).toBeCloseTo(1.0, 3);  // 右 = 白
   });
 });

@@ -193,53 +193,117 @@ export function cropAndNormalize(
   const effective: readonly [number, number, number, number] = rc === false
     ? bbox
     : recenterBbox(src, bbox, typeof rc === 'object' ? rc : {});
-  const [x1, y1, x2, y2] = effective;
-  const cw = Math.max(1, x2 - x1);
-  const ch = Math.max(1, y2 - y1);
-
-  // 1) bbox 領域を中間 canvas に描画
-  const tmp = makeCanvas(cw, ch);
-  const tctx = tmp.getContext('2d') as
-    | CanvasRenderingContext2D
-    | OffscreenCanvasRenderingContext2D
-    | null;
-  if (!tctx) throw new Error('Failed to get 2D context for crop canvas');
-  // putImageData は dirty rect で部分コピー可能
-  tctx.putImageData(src, -x1, -y1);
-
-  return resizeCanvasAndNormalize(tmp);
+  return cropResizeGrayNormalize(
+    src.data, src.width, src.height, effective,
+  );
 }
 
 /**
- * crop 済み canvas を INPUT_WIDTH×INPUT_HEIGHT にリサイズし、
+ * RGBA バッファの指定領域を INPUT_WIDTH×INPUT_HEIGHT へリサイズし、
  * グレースケール (Rec.709) + [-1, 1] 正規化した Float32Array を返す。
+ *
+ * Why canvas-free: 旧実装は box ごとに canvas を2枚生成し、フレーム全体を
+ * putImageData でコピーしていた (box 50-180個 × 300ms 間隔 = 毎秒数百 canvas)。
+ * iOS Safari は canvas バッキングストアに厳しいページ単位の上限があり、GC が
+ * 追いつかず WebContent ごと kill される (実機クラッシュの主犯)。純 JS にすると
+ * 確保するのは GC 可能な TypedArray のみで、canvas 予算を一切消費しない。
+ *
+ * リサイズは縮小方向 = 面積平均 (cv2.INTER_AREA 相当 = 訓練前処理と同一)、
+ * 拡大方向 = 線形補間の分離型2パス。旧 canvas drawImage(双線形系) より
+ * 訓練分布への一致がむしろ良い。
  */
-function resizeCanvasAndNormalize(
-  tmp: HTMLCanvasElement | OffscreenCanvas,
+export function cropResizeGrayNormalize(
+  data: Uint8ClampedArray,
+  srcW: number,
+  srcH: number,
+  bbox: readonly [number, number, number, number],
 ): Float32Array {
-  const resized = makeCanvas(INPUT_WIDTH, INPUT_HEIGHT);
-  const rctx = resized.getContext('2d') as
-    | CanvasRenderingContext2D
-    | OffscreenCanvasRenderingContext2D
-    | null;
-  if (!rctx) throw new Error('Failed to get 2D context for resize canvas');
-  rctx.imageSmoothingEnabled = true;
-  // OffscreenCanvas には imageSmoothingQuality があるが、HTMLCanvas にも存在する
-  (rctx as CanvasRenderingContext2D).imageSmoothingQuality = 'high';
-  rctx.drawImage(tmp as unknown as CanvasImageSource, 0, 0, INPUT_WIDTH, INPUT_HEIGHT);
-  const data = rctx.getImageData(0, 0, INPUT_WIDTH, INPUT_HEIGHT).data;
+  // 画像境界に clip (runtime 側は canvas が自動で fill していた挙動を踏襲し、
+  // はみ出しは無視して有効領域のみ使う)
+  const x1 = Math.max(0, Math.min(srcW - 1, Math.floor(bbox[0])));
+  const y1 = Math.max(0, Math.min(srcH - 1, Math.floor(bbox[1])));
+  const x2 = Math.max(x1 + 1, Math.min(srcW, Math.ceil(bbox[2])));
+  const y2 = Math.max(y1 + 1, Math.min(srcH, Math.ceil(bbox[3])));
+  const cw = x2 - x1;
+  const ch = y2 - y1;
 
-  // RGB → グレースケール (Rec.709 輝度) + 正規化
+  // 1) 領域を gray (Rec.709) の Float 行列へ
+  const gray = new Float32Array(cw * ch);
+  for (let y = 0; y < ch; y++) {
+    let si = ((y1 + y) * srcW + x1) * 4;
+    let di = y * cw;
+    for (let x = 0; x < cw; x++, si += 4, di++) {
+      gray[di] =
+        0.2126 * data[si]! + 0.7152 * data[si + 1]! + 0.0722 * data[si + 2]!;
+    }
+  }
+
+  // 2) 分離型リサイズ: 横 cw→INPUT_WIDTH、縦 ch→INPUT_HEIGHT
+  const horiz = resizeAxis(gray, cw, ch, INPUT_WIDTH, true);
+  const resized = resizeAxis(horiz, INPUT_WIDTH, ch, INPUT_HEIGHT, false);
+
+  // 3) 正規化
   const out = new Float32Array(INPUT_HEIGHT * INPUT_WIDTH);
-  for (let i = 0, j = 0; i < data.length; i += 4, j++) {
-    // luminance 線形近似 (Rec.709 係数を Y' に近似)
-    const r = data[i]!;
-    const g = data[i + 1]!;
-    const b = data[i + 2]!;
-    const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    out[j] = (y / 255 - NORM_MEAN) / NORM_STD;
+  for (let i = 0; i < out.length; i++) {
+    out[i] = (resized[i]! / 255 - NORM_MEAN) / NORM_STD;
   }
   return out;
+}
+
+/**
+ * 1軸ぶんのリサイズ (horizontal=true なら幅方向、false なら高さ方向)。
+ * 縮小 = 面積平均 (box filter、端は端数重み)、拡大 = 線形補間。
+ */
+function resizeAxis(
+  src: Float32Array,
+  srcW: number,
+  srcH: number,
+  outLen: number,
+  horizontal: boolean,
+): Float32Array {
+  const srcLen = horizontal ? srcW : srcH;
+  const lines = horizontal ? srcH : srcW;
+  const dst = new Float32Array(outLen * lines);
+  const scale = srcLen / outLen;
+
+  const srcAt = horizontal
+    ? (line: number, i: number) => src[line * srcW + i]!
+    : (line: number, i: number) => src[i * srcW + line]!;
+  const dstAt = horizontal
+    ? (line: number, o: number, v: number) => { dst[line * outLen + o] = v; }
+    : (line: number, o: number, v: number) => { dst[o * srcW + line] = v; };
+
+  if (scale > 1) {
+    // 縮小: [o*scale, (o+1)*scale) の面積平均
+    for (let o = 0; o < outLen; o++) {
+      const s0 = o * scale;
+      const s1 = (o + 1) * scale;
+      const i0 = Math.floor(s0);
+      const i1 = Math.min(srcLen, Math.ceil(s1));
+      for (let line = 0; line < lines; line++) {
+        let sum = 0;
+        let wsum = 0;
+        for (let i = i0; i < i1; i++) {
+          const w = Math.min(i + 1, s1) - Math.max(i, s0);
+          sum += srcAt(line, i) * w;
+          wsum += w;
+        }
+        dstAt(line, o, sum / wsum);
+      }
+    }
+  } else {
+    // 拡大: ピクセル中心の線形補間
+    for (let o = 0; o < outLen; o++) {
+      const s = Math.min(srcLen - 1, Math.max(0, (o + 0.5) * scale - 0.5));
+      const i0 = Math.floor(s);
+      const i1 = Math.min(srcLen - 1, i0 + 1);
+      const f = s - i0;
+      for (let line = 0; line < lines; line++) {
+        dstAt(line, o, srcAt(line, i0) * (1 - f) + srcAt(line, i1) * f);
+      }
+    }
+  }
+  return dst;
 }
 
 /**
@@ -262,18 +326,11 @@ export function warpQuadAndNormalize(
   ],
 ): Float32Array {
   const warped = warpQuadToImage(src, quad);
-  const tmp = makeCanvas(warped.width, warped.height);
-  const tctx = tmp.getContext('2d') as
-    | CanvasRenderingContext2D
-    | OffscreenCanvasRenderingContext2D
-    | null;
-  if (!tctx) throw new Error('Failed to get 2D context for warp canvas');
-  tctx.putImageData(
-    new ImageData(warped.data, warped.width, warped.height),
-    0,
-    0,
+  // canvas を経由せず、warp 済み RGBA を直接リサイズ+正規化 (canvas 予算を消費しない)
+  return cropResizeGrayNormalize(
+    warped.data, warped.width, warped.height,
+    [0, 0, warped.width, warped.height],
   );
-  return resizeCanvasAndNormalize(tmp);
 }
 
 /**
