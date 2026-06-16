@@ -2,7 +2,7 @@
 //
 // 出力物:
 //   - dist-uranus2/runtime/         ← Vite build した JS bundle + .d.ts
-//   - dist-uranus2/model/           ← 同梱の ONNX (FP16 / FP32 から FP16 を採用)
+//   - dist-uranus2/model/paddle/    ← 同梱の PaddleOCR ONNX (det + rec)
 //   - dist-uranus2/INSTALL.md       ← URANUS2 側での統合手順
 //   - dist-uranus2/manifest.json    ← バージョン / モデルメタ / ハッシュ
 //
@@ -13,7 +13,10 @@
 // URANUS2 への配信は **手動コピー** で運用:
 //   1. このスクリプトで dist-uranus2/ を生成
 //   2. tar / zip にまとめて URANUS2 リポジトリ or 社内 CDN に upload
-//   3. URANUS2 側で modelUrl を指す or assets として参照
+//   3. URANUS2 側で det/rec ModelUrl を指す or assets として参照
+//
+// 2026-06-16 custom backend (自作 12-head/CRNN) 廃止 (vendor-setting-client#430)。
+// backend は paddle (PP-OCRv4 det + rec) 単独。
 //
 // Usage:
 //   pnpm build:uranus2
@@ -26,7 +29,6 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -57,8 +59,6 @@ function clean() {
   }
   mkdirSync(outDir, { recursive: true });
   mkdirSync(resolve(outDir, 'runtime'), { recursive: true });
-  // 2 系統の model 配置: custom (自作 12-head) と paddle (PP-OCRv4)
-  mkdirSync(resolve(outDir, 'model', 'custom'), { recursive: true });
   mkdirSync(resolve(outDir, 'model', 'paddle'), { recursive: true });
 }
 
@@ -74,124 +74,6 @@ function copyRuntime() {
   }
   cpSync(distDir, resolve(outDir, 'runtime'), { recursive: true });
   log(`copied runtime/ ← ${distDir}`);
-}
-
-function copyCustomModel() {
-  // 優先順:
-  //   1. meiban-ocr-real-v<N>(-suffix)?.onnx の最大 N、 同 N 内では suffix 付きを優先
-  //      (例: real-v7-crnn > real-v6-rnn > real-v6 > real-v5)
-  //   2. meiban-ocr-v2-fh.onnx (旧 fixed-head)
-  //   3. meiban-ocr-v1.onnx (旧 CRNN+CTC)
-  //
-  // suffix の意図:
-  //   - 無印: fixed-head 12-position (旧 default)
-  //   - -rnn: fixed-head + BiGRU 増強
-  //   - -crnn: 完全な CRNN+CTC (clovaai pretrained 系統)
-  //
-  // dstName とformat は ONNX の出力 shape (C=13 or 37) で本来判別すべきだが、
-  // 配信段で重い ONNX を load せずに manifest を書きたいので filename 規約で代用。
-  const modelsDir = resolve(repoRoot, 'models');
-  const realCandidates = [];
-  if (existsSync(modelsDir)) {
-    // -crnn / -rnn / 無印 の suffix を許容
-    const realRe = /^meiban-ocr-real-v(\d+)(?:-([a-z]+))?\.onnx$/;
-    for (const f of readdirSync(modelsDir)) {
-      const m = realRe.exec(f);
-      if (m) realCandidates.push({
-        path: resolve(modelsDir, f),
-        version: parseInt(m[1], 10),
-        suffix: m[2] ?? '',
-      });
-    }
-    // version desc、 同 version 内では suffix あり (= 新しい実験変種) を優先
-    realCandidates.sort((a, b) => {
-      if (a.version !== b.version) return b.version - a.version;
-      const aw = a.suffix ? 1 : 0;
-      const bw = b.suffix ? 1 : 0;
-      return bw - aw;
-    });
-  }
-  const candidates = [
-    ...realCandidates.map(c => c.path),
-    resolve(repoRoot, 'models/meiban-ocr-v2-fh.onnx'),
-    resolve(repoRoot, 'models/meiban-ocr-v1.onnx'),
-  ];
-  const src = candidates.find(p => existsSync(p));
-  if (!src) {
-    log('WARN: no custom ONNX model found in models/, skipping custom backend');
-    return null;
-  }
-  // filename 規約で arch を判別: -crnn は CRNN+CTC (C=37)、 それ以外は fixed-head (C=13) 想定
-  const srcName = src.split('/').pop();
-  const isCrnn = /real-v\d+-crnn\.onnx$/.test(srcName) || srcName === 'meiban-ocr-v1.onnx';
-  const dstName = isCrnn ? 'meiban-ocr-crnn.onnx' : 'meiban-ocr-fixed-head.onnx';
-  // Why fp32: final(.onnx)は fp16。iOS Safari の WebGPU は shader-f16 未対応のことが多く、
-  // さらに onnxruntime-web の WebGPU EP が未対応op(例 LSTM)を wasm に op単位フォールバックする際
-  // fp16 は実行時クラッシュする(実機で custom 不発火・paddle fp32 は発火、で確認)。
-  // fp32 は WebGPU で paddle 同様に動くため、custom も fp32 を配信する。fp32 兄弟があればそれを使う。
-  const fp32Sibling = src.replace(/\.onnx$/, '.fp32.onnx');
-  const actualSrc = existsSync(fp32Sibling) ? fp32Sibling : src;
-  const dst = resolve(outDir, 'model', 'custom', dstName);
-  copyFileSync(actualSrc, dst);
-  const size = statSync(dst).size;
-  const hash = fileSha256(dst);
-  const prec = actualSrc.endsWith('.fp32.onnx') ? 'fp32' : 'fp16';
-  log(`copied custom model: ${actualSrc} → ${dst} (${(size / 1024).toFixed(1)} KB, ${prec}, sha256=${hash.slice(0, 16)}…)`);
-  // モバイル(メモリ制約)用に fp16 兄弟も同梱する。wasm EP なら fp16 で安全に動き、
-  // セッション定常メモリが fp32 比 ~-50MB (実測 209→160MB)。WebGPU では使わないこと
-  // (iOS Safari shader-f16 クラッシュ)。
-  const fp16Sibling = src.replace(/\.onnx$/, '.fp16.onnx');
-  const fp16Src = existsSync(fp16Sibling) ? fp16Sibling : (src.endsWith('.fp16.onnx') ? src : null);
-  if (fp16Src && fp16Src !== actualSrc) {
-    const fp16Dst = resolve(outDir, 'model', 'custom', dstName.replace(/\.onnx$/, '.fp16.onnx'));
-    copyFileSync(fp16Src, fp16Dst);
-    log(`copied custom model (fp16 for mobile): ${fp16Src} → ${fp16Dst}`);
-  }
-  return {
-    type: 'custom',
-    name: dstName,
-    source: actualSrc.split('/').pop(),  // 実配信元(fp32)を manifest に記録
-    relpath: `model/custom/${dstName}`,
-    size,
-    hash,
-    precision: prec,
-    format: isCrnn ? 'crnn-ctc' : 'fixed-head-12pos',
-  };
-}
-
-function copyTailModel() {
-  // 末尾 2nd-pass 専用モデル (meiban-ocr-tail-v<N>.onnx の最大 N)。無ければ skip。
-  // full モデルと同じ理由で fp32 兄弟を優先 (iOS Safari WebGPU の shader-f16 未対応)。
-  const modelsDir = resolve(repoRoot, 'models');
-  if (!existsSync(modelsDir)) return null;
-  const tailRe = /^meiban-ocr-tail-v(\d+)\.onnx$/;
-  const candidates = readdirSync(modelsDir)
-    .map(f => ({ f, m: tailRe.exec(f) }))
-    .filter(x => x.m)
-    .sort((a, b) => parseInt(b.m[1], 10) - parseInt(a.m[1], 10));
-  if (candidates.length === 0) {
-    log('no tail model (meiban-ocr-tail-v*.onnx) — 2nd-pass disabled in INSTALL example');
-    return null;
-  }
-  const src = resolve(modelsDir, candidates[0].f);
-  const fp32Sibling = src.replace(/\.onnx$/, '.fp32.onnx');
-  const actualSrc = existsSync(fp32Sibling) ? fp32Sibling : src;
-  const dst = resolve(outDir, 'model', 'custom', 'meiban-ocr-tail.onnx');
-  copyFileSync(actualSrc, dst);
-  const size = statSync(dst).size;
-  const hash = fileSha256(dst);
-  const prec = actualSrc.endsWith('.fp32.onnx') ? 'fp32' : 'fp16';
-  log(`copied tail model: ${actualSrc} → ${dst} (${(size / 1024).toFixed(1)} KB, ${prec}, sha256=${hash.slice(0, 16)}…)`);
-  return {
-    type: 'custom-tail',
-    name: 'meiban-ocr-tail.onnx',
-    source: actualSrc.split('/').pop(),
-    relpath: 'model/custom/meiban-ocr-tail.onnx',
-    size,
-    hash,
-    precision: prec,
-    format: 'crnn-ctc-tail4',
-  };
 }
 
 function copyPaddleModels() {
@@ -236,40 +118,17 @@ function writeManifest(backends) {
     backends: backends.filter(Boolean),
     notes: [
       'This artifact is NOT for npm publication or public distribution.',
-      'It may contain a model trained on real customer serial numbers.',
       'Distribute only to URANUS2 internal deployment.',
-      'Backends are A/B testable via MeibanOCR.create({ backend: "custom" | "paddle" }).',
+      'Backend is PaddleOCR PP-OCRv4 (det + rec). custom backend was removed in vendor-setting-client#430.',
     ],
   };
   const path = resolve(outDir, 'manifest.json');
   writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n');
-  log(`wrote manifest.json (backends: ${backends.filter(Boolean).map(b => b.type).join(', ')})`);
+  log(`wrote manifest.json (backends: ${backends.filter(Boolean).map(b => b.type).join(', ') || 'none'})`);
 }
 
 function writeInstallGuide(backends) {
-  const custom = backends.find(b => b && b.type === 'custom');
-  const hasCustom = !!custom;
   const hasPaddle = backends.some(b => b && b.type === 'paddle');
-  // custom モデルの実ファイル名/サイズ/format は build 時に決まる(crnn か fixed-head か)。
-  // INSTALL の例が実態とズレないよう、 ここから動的に埋める。
-  const customUrl = custom
-    ? `/assets/meiban-ocr/${custom.relpath}`
-    : '/assets/meiban-ocr/model/custom/meiban-ocr-crnn.onnx';
-  const customSizeMB = custom ? (custom.size / 1024 / 1024).toFixed(1) : '?';
-  const customFmt = custom ? custom.format : 'crnn-ctc';
-  // v11 以降の real モデルはマルチタスク (full + tail) 訓練なので、2nd-pass は
-  // 同一セッション再利用 ('self') が既定。別 tail モデル (+109MB) は不要。
-  const realVersion = custom ? parseInt((/real-v(\d+)/.exec(custom.source ?? '') ?? [])[1] ?? '0', 10) : 0;
-  const tail = backends.find(b => b && b.type === 'custom-tail');
-  const tailLines = realVersion >= 11
-    ? `  tailModelUrl: 'self',  // 末尾2nd-pass を同一セッションで実行 (v11+ はマルチタスク訓練。メモリ増ゼロ)
-  tailConfidence: 0.98,
-`
-    : tail
-      ? `  tailModelUrl: '/assets/meiban-ocr/${tail.relpath}',  // 末尾2nd-pass (pos10/11 対策, E2E +0.9pt)
-  tailConfidence: 0.9,
-`
-      : '';
   const md = `# URANUS2 への統合手順
 
 このディレクトリ (\`dist-uranus2/\`) は **meiban-ocr の URANUS2 統合用ローカル成果物** です。
@@ -278,124 +137,62 @@ function writeInstallGuide(backends) {
 ## 中身
 
 - \`runtime/\` — Vite build 済の TypeScript bundle (\`index.js\` + \`index.d.ts\`)
-- \`model/custom/\` — 自作 OCR モデル (${customSizeMB} MB, ${customFmt})${hasCustom ? '' : ' ← **未同梱** (models/ に custom ONNX が無いため)'}
 - \`model/paddle/\` — PaddleOCR PP-OCRv4 mobile (det + rec、 ~15 MB)${hasPaddle ? '' : ' ← **未同梱** (models/ppocrv4_*.onnx が無いため)'}
-- \`manifest.json\` — backend ごとのバージョン / ハッシュ / モデルメタ
+- \`manifest.json\` — backend のバージョン / ハッシュ / モデルメタ
 - \`INSTALL.md\` — このファイル
 
 ## URANUS2 側での組み込み
 
 1. このディレクトリ全体を URANUS2 リポジトリの所定の場所にコピー (例: \`assets/meiban-ocr/\`)
 2. URANUS2 ビルド時に \`assets/meiban-ocr/runtime/index.js\` を import
-3. backend を指定して MeibanOCR.create() を呼ぶ (どちらかを選ぶ or A/B)
+3. det + rec モデルを指定して MeibanOCR.create() を呼ぶ
 
-### 例: Custom backend(フルフレーム走査 = ハイブリッド: paddle det + custom rec)【推奨】
-
-カメラのフルフレーム(複数銘板)をそのまま渡す運用。paddle det で検出 → custom CRNN で認識する。
-(paddle det はシリアル領域を 100% カバー。custom rec は軽量 + Ericsson regex で誤発火を抑える。
-paddle rec 単体は辞書6623で重く ~10s かかるため非推奨。)
+### 例: Paddle backend (PP-OCRv4、 訓練不要)
 
 \`\`\`tsx
-import { MeibanOCR, createPaddleDetDetector } from '@assets/meiban-ocr/runtime';
-
-// paddle det を DetectorFn 化(同梱の ppocrv4_det を使う)
-// boxMode は default 'quad'(本家準拠の回転矯正crop)。E2E実測(held-out 3,219枚):
-//   rect@960 37.7% → quad@960 65.9% → quad@1280 78.4%(detLongSide はレイテンシと相談)
-const detector = await createPaddleDetDetector({
-  detModelUrl: '/assets/meiban-ocr/model/paddle/ppocrv4_det.onnx',
-  executionProviders: ['webgpu', 'wasm'],
-  detLongSide: 1280,   // 精度優先。フレームレート優先なら 960
-});
+import { MeibanOCR } from '@assets/meiban-ocr/runtime';
 
 const ocr = await MeibanOCR.create({
-  backend: 'custom',
-  modelUrl: '${customUrl}',
-${tailLines}  vendor: 'ericsson',
-  detector,            // ★ paddle det 検出 → custom CRNN 認識(ハイブリッド)
-  prefilter: false,    // paddle det の box をそのまま使う
-  recenter: false,
-  minConfidence: 0.5,
-  executionProviders: ['webgpu', 'wasm'],   // custom モデルは fp32(WebGPU/WASM 両対応)
-});
-
-const results = await ocr.recognize(cameraFullFrame);
-\`\`\`
-
-> reticle(ユーザーが1枚を枠に収める)UX の場合のみ、 detector を full-frame
-> \`(img) => [[0, 0, img.width, img.height]]\` にし、 アプリ側で reticle 枠内だけを crop して渡す。
-> ※ カメラのフルフレームを full-frame detector に渡すと全景が潰れて不発火するので注意。
-\`\`\`
-
-### モバイル(メモリ制約)プロファイル
-
-iOS Safari / WKWebView では ORT セッションの wasm ヒープが大きく、実測 (node ort-web,
-settle RSS): rec fp32=+209MB / rec fp16=+160MB、det@1280=+268MB / @960=+219MB / @640=+171MB。
-fp32+1280 の2セッション (~477MB) はモバイルでメモリ kill される。以下のプロファイルを推奨:
-
-\`\`\`tsx
-const detector = await createPaddleDetDetector({
-  detModelUrl: '/assets/meiban-ocr/model/paddle/ppocrv4_det.onnx',
-  executionProviders: ['wasm'],   // WebGPU 併用はバッファ二重持ちの恐れ。wasm 固定
-  detLongSide: 640,               // reticle UX (銘板が画面大) なら 640 で十分。余裕があれば 960
-});
-const ocr = await MeibanOCR.create({
-  backend: 'custom',
-  modelUrl: '/assets/meiban-ocr/model/custom/meiban-ocr-crnn.fp16.onnx',  // fp16 (wasm なら安全)
-  vendor: 'ericsson',
-  detector,
-  prefilter: false,
-  recenter: false,
-  maxBatchSize: 8,                // バッチ大は conv の作業バッファが肥大 (B=64 で +64MB)
-  minConfidence: 0.5,
-  tailModelUrl: 'self',
-  tailConfidence: 0.98,
-  executionProviders: ['wasm'],
-});
-\`\`\`
-
-> 注意: fp16 モデルを WebGPU で動かさないこと (iOS Safari の shader-f16 未対応でクラッシュ)。
-> wasm EP なら fp16 は安全 (読み一致を確認済み)。
-\`\`\`
-
-### 例: Paddle backend (PP-OCRv4、 訓練不要、 大きめ)
-
-\`\`\`tsx
-const ocr = await MeibanOCR.create({
-  backend: 'paddle',
+  backend: 'paddle',   // default かつ現状唯一
   detModelUrl: '/assets/meiban-ocr/model/paddle/ppocrv4_det.onnx',
   recModelUrl: '/assets/meiban-ocr/model/paddle/ppocrv4_rec.onnx',
+  vendor: 'ericsson',
   executionProviders: ['webgpu', 'wasm'],
   minConfidence: 0.5,
   // 汎用 det が背景の文字様パターンを大量検出すると B(rec バッチ)が膨らみ、 メインスレッド
   // (rec 推論 + box毎前処理 + 大きな CTC デコード)を占有して UI がフリーズする。 銘板スキャナは
   // 主要テキスト領域だけ読めれば十分なので、 rec に渡す box を面積上位 K 件に制限する。
   maxRecBoxes: 4,
+  // det の長辺リサイズ。 精度優先なら 1280、 フレームレート優先なら 960 (default)。
+  detLongSide: 960,
 });
 
-const results = await ocr.recognize(videoFrame);
+const results = await ocr.recognize(cameraFrame);
 \`\`\`
 
-### 例: A/B 比較
+### モバイル(メモリ制約)プロファイル
+
+iOS Safari / WKWebView では ORT セッションの wasm ヒープが大きい (実測 settle RSS:
+det@1280=+268MB / @960=+219MB / @640=+171MB)。 WebGPU 併用はバッファ二重持ちの恐れがあるため
+wasm 固定 + 長辺を絞るのを推奨:
 
 \`\`\`tsx
-// 設定で切替
-const backend = config.OCR_BACKEND;  // 'custom' | 'paddle'
-const ocr = await MeibanOCR.create(
-  backend === 'paddle'
-    ? { backend: 'paddle', detModelUrl: '...', recModelUrl: '...' }
-    : { backend: 'custom', modelUrl: '...' }
-);
-
-// もしくは両方並べて同じ frame に流して結果比較
-const [a, b] = await Promise.all([customOcr.recognize(frame), paddleOcr.recognize(frame)]);
+const ocr = await MeibanOCR.create({
+  backend: 'paddle',
+  detModelUrl: '/assets/meiban-ocr/model/paddle/ppocrv4_det.onnx',
+  recModelUrl: '/assets/meiban-ocr/model/paddle/ppocrv4_rec.onnx',
+  vendor: 'ericsson',
+  executionProviders: ['wasm'],   // WebGPU 併用はバッファ二重持ちの恐れ。 wasm 固定
+  detLongSide: 640,               // reticle UX (銘板が画面大) なら 640 で十分
+  maxRecBoxes: 4,
+  minConfidence: 0.5,
+});
 \`\`\`
 
 ## 配信時の注意
 
 - このディレクトリは git で commit してはいけない。 ルート \`.gitignore\` の \`/dist-uranus2/\` で除外済。
 - URANUS2 リポジトリへの配置は **手動コピー or 内部 CDN 経由**。 公開 CDN は不可。
-- Custom backend のモデルは **実シリアルを認識する可能性** がある (訓練データ次第)。
-  顧客向け配信時はアクセス制限を確認。
 - Paddle backend のモデルは公開済 OSS (PaddleOCR Apache-2.0)、 訓練データ漏洩リスクなし。
 `;
   writeFileSync(resolve(outDir, 'INSTALL.md'), md);
@@ -407,9 +204,7 @@ function summarize(backends) {
   log('========== build complete ==========');
   log(`output: ${outDir}`);
   for (const b of backends.filter(Boolean)) {
-    if (b.type === 'custom') {
-      log(`  custom: ${b.name} (${(b.size / 1024).toFixed(1)} KB)`);
-    } else if (b.type === 'paddle') {
+    if (b.type === 'paddle') {
       log(`  paddle: det+rec (${((b.size_bytes_total) / 1024).toFixed(1)} KB total)`);
     }
   }
@@ -428,7 +223,7 @@ function main() {
   clean();
   buildRuntime();
   copyRuntime();
-  const backends = [copyCustomModel(), copyTailModel(), copyPaddleModels()];
+  const backends = [copyPaddleModels()];
   writeManifest(backends);
   writeInstallGuide(backends);
   summarize(backends);

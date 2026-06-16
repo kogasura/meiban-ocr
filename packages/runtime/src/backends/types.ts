@@ -1,20 +1,17 @@
 /**
- * Backend インターフェース — Custom 12-head と PaddleOCR (および将来の他実装) を
+ * Backend インターフェース — PaddleOCR (および将来の他実装) を
  * 同一 API で扱うための抽象層。
  *
  * 設計方針:
  * - 各 backend は ImageData → OCRResult[] を返すブラックボックス
  * - 検出器 / preprocess / decode は backend 内に閉じる
- * - URANUS2 側からは `MeibanOCR.create({ backend: 'custom' | 'paddle' })` で選択可能
+ * - URANUS2 側からは `MeibanOCR.create({ backend: 'paddle' })` で選択可能
  * - 既存 API surface (`MeibanOCR.create()`, `recognize()`, `dispose()`) は破壊しない
  *
  * 2026-06-02 dual-backend architecture 導入。
+ * 2026-06-16 custom backend (自作 12-head/CRNN) を廃止し paddle 単独に (vendor-setting-client#430)。
  */
 
-import type { PrefilterOptions } from '../detectors/prefilter';
-import type { SlidingWindowOptions } from '../detectors/sliding-window';
-import type { DetectorFn } from '../detectors/types';
-import type { RecenterOptions } from '../preprocess';
 import type { VendorPattern } from '../vendors';
 
 /** Backend が返す共通 result 型 (MeibanOCR.ts と一致)。 */
@@ -34,7 +31,7 @@ export interface Backend {
 }
 
 /** どの backend を使うかの discriminator。 */
-export type BackendType = 'custom' | 'paddle';
+export type BackendType = 'paddle';
 
 /** 全 backend 共通のオプション。 */
 export interface CommonBackendOptions {
@@ -44,55 +41,6 @@ export interface CommonBackendOptions {
   minConfidence?: number;
   /** vendor 補正パイプライン (default: 'ericsson')。 */
   vendor?: 'ericsson' | VendorPattern;
-}
-
-/**
- * Custom backend (既存 12-head fixed-length OCR) の初期化オプション。
- * 既存 MeibanOCROptions の中身そのまま。
- */
-export interface CustomBackendInit extends CommonBackendOptions {
-  /** ONNX モデルの URL (オーバーライド用)。未指定ならバンドル版を使う。 */
-  modelUrl?: string;
-  /** バンドル版モデルのバイト列。 */
-  modelBytes?: Uint8Array | ArrayBuffer;
-  /**
-   * 検出器。
-   * - 関数 (`DetectorFn`) を渡すと: ImageData → bbox[] を返す責務
-   * - オブジェクトを渡すと: 組込 sliding-window のチューニング
-   * - 省略時: 組込 sliding-window がデフォルト設定で動く
-   */
-  detector?: DetectorFn | SlidingWindowOptions;
-  /** 1 バッチ最大件数。デフォルト 64。WebGPU の VRAM 制約対策。 */
-  maxBatchSize?: number;
-  /**
-   * 古典 CV pre-filter (Phase 2a)。エッジ密度 + 局所分散で背景窓を除外。
-   * - `true` or option: 有効化 (default)
-   * - `false`: 無効化 (検出器の bbox をそのまま使う)
-   */
-  prefilter?: boolean | PrefilterOptions;
-  /**
-   * Window 再センタリング (Phase 2b, PR #1)。
-   * sliding-window 窓内で text が横にズレているとき column activity の重心で
-   * bbox を水平シフトしてから crop。 fixed-head OCR の位置固定契約を保つ。
-   * - `true` (default) / option
-   * - `false`: 旧挙動 (ズレた窓をそのまま渡す)
-   */
-  recenter?: boolean | RecenterOptions;
-  /**
-   * 末尾 2nd-pass 専用モデル (CTC、末尾4文字を高解像で再読) の URL。
-   * 指定すると quad つき box の 12 文字 read に対し、CTC アライメントで末尾4文字
-   * 領域を再 crop → このモデルで再読 → アンカー一致 & 高 confidence のときだけ
-   * 末尾2文字を差し替える。誤読の95%が集中する pos10/11 への対策
-   * (held-out 実測: clean EM +1.26pt / E2E +0.92pt / 偽発火も微減、新規発火なし)。
-   * - `'self'`: full モデルと同一セッションで 2nd-pass を実行 (マルチタスク訓練
-   *   モデル v11+ 用)。2本目のセッションを作らないためメモリ増ゼロ。
-   * - 未指定なら 2nd-pass 無効 (従来挙動)。
-   */
-  tailModelUrl?: string;
-  /** 末尾 2nd-pass モデルのバイト列 (URL の代替)。 */
-  tailModelBytes?: Uint8Array | ArrayBuffer;
-  /** 末尾差し替えに要求する tail read の confidence。default 0.9。 */
-  tailConfidence?: number;
 }
 
 /**
@@ -141,7 +89,6 @@ export interface PaddleBackendInit extends CommonBackendOptions {
 /**
  * MeibanOCR.create() に渡る統合オプション。
  *
- * `backend` でどの実装を使うか選ぶ。 default 'custom' (既存挙動 100% 互換)。
- * backend 別の専用フィールドは該当 backend のみ参照する (他は無視)。
+ * 現状 backend は paddle のみ。 将来 backend を追加する際は union に戻す。
  */
-export type AnyBackendInit = CustomBackendInit | PaddleBackendInit;
+export type AnyBackendInit = PaddleBackendInit;

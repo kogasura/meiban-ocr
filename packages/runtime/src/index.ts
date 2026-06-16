@@ -8,7 +8,6 @@ export type {
   Backend,
   BackendType,
   CommonBackendOptions,
-  CustomBackendInit,
   PaddleBackendInit,
 } from './backends/types';
 export {
@@ -20,21 +19,12 @@ export {
 } from './constants';
 export { ericsson, type VendorPattern, VENDOR_PATTERNS } from './vendors';
 export { ctcGreedyDecode, applyCorrectionPipeline, preprocessText } from './decoder';
-export type { CropOptions, ImageInput, RecenterOptions } from './preprocess';
+export type { ImageInput } from './preprocess';
 export {
   detBoxBBox,
   detBoxQuad,
   type BBox,
   type DetBox,
-  type DetectorFn,
   type Quad,
   type QuadBox,
 } from './detectors/types';
-export {
-  createSlidingWindowDetector,
-  type SlidingWindowOptions,
-} from './detectors/sliding-window';
-export {
-  createPaddleDetDetector,
-  type PaddleDetDetectorOptions,
-} from './detectors/paddle-det';

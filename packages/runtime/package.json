@@ -1,6 +1,6 @@
 {
   "name": "@meiban-ocr/runtime",
-  "version": "0.4.2-internal",
+  "version": "0.5.0-internal",
   "private": true,
   "description": "Internal-only OCR runtime. Distributed by URANUS2 deployment, NOT via npm.",
   "license": "UNLICENSED",
@@ -37,8 +37,6 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "bundle-model": "node scripts/bundle-model.mjs",
-    "prebuild": "node scripts/bundle-model.mjs",
     "build": "vite build && tsc -p tsconfig.build.json --emitDeclarationOnly",
     "build:uranus2": "node scripts/build-for-uranus2.mjs",
     "test": "vitest run",

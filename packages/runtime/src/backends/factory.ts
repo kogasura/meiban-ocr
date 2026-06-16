@@ -2,16 +2,16 @@
  * Backend factory — backend type を見て該当実装を返す。
  *
  * 使い方:
- *   const backend = await createBackend('custom', { modelUrl, ... });
  *   const backend = await createBackend('paddle', { detModelUrl, recModelUrl, ... });
+ *
+ * 現状 backend は paddle (PP-OCRv4 det + rec) のみ。custom (自作 12-head/CRNN) は
+ * vendor-setting-client#430 で廃止。将来 backend を追加する際は case を足す。
  */
 
-import { CustomBackend } from './custom';
 import type {
   AnyBackendInit,
   Backend,
   BackendType,
-  CustomBackendInit,
   PaddleBackendInit,
 } from './types';
 
@@ -20,11 +20,8 @@ export async function createBackend(
   options: AnyBackendInit = {},
 ): Promise<Backend> {
   switch (type) {
-    case 'custom':
-      return CustomBackend.create(options as CustomBackendInit);
     case 'paddle': {
-      // 動的 import で paddle backend を必要時のみロード
-      // (custom-only 利用時は paddle のコードを bundle から除外可能、 将来の最適化)
+      // 動的 import で paddle backend を必要時のみロード。
       const { PaddleBackend } = await import('./paddle');
       return PaddleBackend.create(options as PaddleBackendInit);
     }
