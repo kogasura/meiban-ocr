@@ -2,6 +2,7 @@ export {
   MeibanOCR,
   type MeibanOCROptions,
   type OCRResult,
+  type RecognizedLine,
 } from './MeibanOCR';
 export type {
   AnyBackendInit,

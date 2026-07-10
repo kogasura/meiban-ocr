@@ -84,6 +84,19 @@ export interface PaddleBackendInit extends CommonBackendOptions {
    * メインスレッド負荷を桁で下げる。0 以下なら無制限 (従来挙動)。
    */
   maxRecBoxes?: number;
+  /**
+   * rec のみを使う軽量モード (default false)。
+   * true の場合、 det モデルの fetch / session 生成をスキップし、
+   * `recognize()` は使えず `recognizeLine()` のみ利用可能になる。
+   * 外部 (例: 古典 CV) で検出済みの 1 行画像を直接認識する用途向け。
+   */
+  recOnly?: boolean;
+}
+
+/** rec-only 認識の戻り値。 bbox なし (入力画像全体を 1 行として扱う)。 */
+export interface RecognizedLine {
+  text: string;
+  confidence: number;
 }
 
 /**

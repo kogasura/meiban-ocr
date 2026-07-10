@@ -14,11 +14,13 @@
  */
 
 import { createBackend } from './backends/factory';
+import type { PaddleBackend } from './backends/paddle';
 import type {
   Backend,
   BackendType,
   OCRResult,
   PaddleBackendInit,
+  RecognizedLine,
 } from './backends/types';
 import { imageInputToImageData, type ImageInput } from './preprocess';
 
@@ -35,7 +37,7 @@ export type MeibanOCROptions = {
   backend?: BackendType;
 } & PaddleBackendInit;
 
-export type { OCRResult } from './backends/types';
+export type { OCRResult, RecognizedLine } from './backends/types';
 
 export class MeibanOCR {
   private readonly backend: Backend;
@@ -57,8 +59,41 @@ export class MeibanOCR {
     return this.backend.recognize(imageData);
   }
 
+  /**
+   * rec-only 認識。 外部 (古典 CV 等) で切り出し済みの 1 行画像を直接 rec モデルに
+   * かけ、 `{ text, confidence }` を返す。
+   *
+   * `backend: 'paddle'` かつ `recOnly: true` で `create()` した場合のみ利用可能。
+   * それ以外の backend / モードで呼ぶと throw する。
+   */
+  async recognizeLine(image: ImageInput): Promise<RecognizedLine> {
+    if (!isRecOnlyPaddleBackend(this.backend)) {
+      throw new Error(
+        'MeibanOCR.recognizeLine: only available when created with ' +
+          "{ backend: 'paddle', recOnly: true }",
+      );
+    }
+    const imageData = imageInputToImageData(image);
+    return this.backend.recognizeLine(imageData);
+  }
+
   /** 解放: 内部 backend (ORT session 等) を破棄。 */
   async dispose(): Promise<void> {
     return this.backend.dispose();
   }
+}
+
+/**
+ * `backend.recognizeLine` の有無で判定する (duck typing)。
+ * PaddleBackend は factory.ts の動的 import 経由で生成されるため、
+ * `instanceof PaddleBackend` より安全にモジュール非依存で判定できる。
+ */
+function isRecOnlyPaddleBackend(
+  backend: Backend,
+): backend is PaddleBackend & {
+  recognizeLine(image: ImageData): Promise<RecognizedLine>;
+} {
+  return (
+    typeof (backend as Partial<PaddleBackend>).recognizeLine === 'function'
+  );
 }
