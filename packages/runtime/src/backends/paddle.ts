@@ -29,7 +29,12 @@ import {
   preprocessForDet,
   preprocessForRecBatch,
 } from './paddle/preprocess';
-import type { Backend, OCRResult, PaddleBackendInit } from './types';
+import type {
+  Backend,
+  OCRResult,
+  PaddleBackendInit,
+  RecognizedLine,
+} from './types';
 
 const DEFAULT_MIN_CONFIDENCE = 0.5;
 const DEFAULT_EPS: Array<'webgpu' | 'wasm' | 'webgl'> = ['webgpu', 'wasm'];
@@ -39,7 +44,7 @@ const DEFAULT_EPS: Array<'webgpu' | 'wasm' | 'webgl'> = ['webgpu', 'wasm'];
 import dictText from '../assets/ppocrv4_dict.txt?raw';
 
 export class PaddleBackend implements Backend {
-  private readonly detSession: ort.InferenceSession;
+  private readonly detSession: ort.InferenceSession | undefined;
   private readonly recSession: ort.InferenceSession;
   private readonly dict: string[];
   private readonly vendor: VendorPattern;
@@ -48,9 +53,10 @@ export class PaddleBackend implements Backend {
   private readonly detBinaryThreshold: number;
   private readonly detMinBoxSize: number;
   private readonly maxRecBoxes: number;
+  private readonly recOnly: boolean;
 
   private constructor(
-    detSession: ort.InferenceSession,
+    detSession: ort.InferenceSession | undefined,
     recSession: ort.InferenceSession,
     dict: string[],
     vendor: VendorPattern,
@@ -65,6 +71,7 @@ export class PaddleBackend implements Backend {
     this.detBinaryThreshold = options.detBinaryThreshold ?? 0.3;
     this.detMinBoxSize = options.detMinBoxSize ?? 3;
     this.maxRecBoxes = options.maxRecBoxes ?? 8;
+    this.recOnly = options.recOnly ?? false;
   }
 
   static async create(options: PaddleBackendInit = {}): Promise<PaddleBackend> {
@@ -75,39 +82,51 @@ export class PaddleBackend implements Backend {
       graphOptimizationLevel: 'all',
     };
 
-    if (!options.detModelUrl && !options.detModelBytes) {
-      throw new Error(
-        'PaddleBackend: detModelUrl or detModelBytes required (no default bundle)',
-      );
-    }
     if (!options.recModelUrl && !options.recModelBytes) {
       throw new Error(
         'PaddleBackend: recModelUrl or recModelBytes required (no default bundle)',
       );
     }
 
-    const [detSession, recSession] = await Promise.all([
-      createOrtSession(
+    let detSession: ort.InferenceSession | undefined;
+    if (options.recOnly) {
+      // rec-only モード: det モデルの fetch / session 生成をスキップする
+      // (モバイルのメモリ・初期化時間削減。 外部で検出済みの 1 行画像を渡す用途)
+      detSession = undefined;
+    } else {
+      if (!options.detModelUrl && !options.detModelBytes) {
+        throw new Error(
+          'PaddleBackend: detModelUrl or detModelBytes required (no default bundle)',
+        );
+      }
+      detSession = await createOrtSession(
         options.detModelBytes,
         options.detModelUrl,
         undefined,
         sessionOptions,
         'detModelUrl',
-      ),
-      createOrtSession(
-        options.recModelBytes,
-        options.recModelUrl,
-        undefined,
-        sessionOptions,
-        'recModelUrl',
-      ),
-    ]);
+      );
+    }
+
+    const recSession = await createOrtSession(
+      options.recModelBytes,
+      options.recModelUrl,
+      undefined,
+      sessionOptions,
+      'recModelUrl',
+    );
 
     const dict = options.dict ?? parseDict(dictText);
     return new PaddleBackend(detSession, recSession, dict, vendor, options);
   }
 
   async recognize(imageData: ImageData): Promise<OCRResult[]> {
+    if (this.recOnly || !this.detSession) {
+      throw new Error(
+        'PaddleBackend.recognize: not available in recOnly mode (det session not loaded). ' +
+          'Use recognizeLine() instead.',
+      );
+    }
     // 1. Detection 前処理 + 推論
     const det = preprocessForDet(imageData, this.detLongSide);
     const detInputName = this.detSession.inputNames[0]!;
@@ -191,8 +210,55 @@ export class PaddleBackend implements Backend {
     return dedupByText(results);
   }
 
+  /**
+   * rec-only 認識。 外部 (古典 CV 等) で切り出し済みの 1 行画像を直接 rec モデルに
+   * かける。 `recOnly: true` で生成した場合のみ有効 (det session が無いため)。
+   *
+   * @param lineImage 切り出し済みの 1 行画像。 高さ 48px 前提 (preprocessForRec が
+   *                  アスペクト比を保持して内部リサイズするため、 それ以外の高さでも
+   *                  動作はするが、 rec モデルの学習分布に近い 48px 入力を推奨)。
+   */
+  async recognizeLine(lineImage: ImageData): Promise<RecognizedLine> {
+    if (lineImage.width <= 0 || lineImage.height <= 0) {
+      return { text: '', confidence: 0 };
+    }
+
+    const bbox: [number, number, number, number] = [
+      0,
+      0,
+      lineImage.width,
+      lineImage.height,
+    ];
+    const recInput = preprocessForRecBatch(lineImage, [bbox]);
+    const recInputName = this.recSession.inputNames[0]!;
+    const recOutputName = this.recSession.outputNames[0]!;
+    const recTensor = new ort.Tensor(
+      'float32',
+      recInput.tensor,
+      [recInput.batch, 3, recInput.height, recInput.width],
+    );
+    const recOutput = await this.recSession.run({
+      [recInputName]: recTensor,
+    });
+    const recLogits = recOutput[recOutputName]!;
+    const [B, T, C] = recLogits.dims as [number, number, number];
+
+    const decoded = ctcGreedyDecodeBatch(
+      recLogits.data as Float32Array,
+      B,
+      T,
+      C,
+      this.dict,
+    );
+    const { text: raw, confidence } = decoded[0]!;
+    const corr = applyCorrectionPipeline(raw, this.vendor);
+    // 補正パイプラインが未マッチ (null) の場合は空文字を返す (呼び出し側で
+    // text === '' または confidence 閾値未満として弾ける)。
+    return { text: corr.text ?? '', confidence: round(confidence, 4) };
+  }
+
   async dispose(): Promise<void> {
-    await Promise.all([this.detSession.release(), this.recSession.release()]);
+    await Promise.all([this.detSession?.release(), this.recSession.release()]);
   }
 }
 
