@@ -23,7 +23,11 @@ import * as ort from 'onnxruntime-web';
 import { applyCorrectionPipeline } from '../decoder';
 import { ericsson, VENDOR_PATTERNS, type VendorPattern } from '../vendors';
 import { createOrtSession } from './_shared';
-import { ctcGreedyDecodeBatch, parseDict } from './paddle/ctc_decode';
+import {
+  ctcGreedyDecodeBatch,
+  parseDict,
+  type CtcDecodeResult,
+} from './paddle/ctc_decode';
 import { dbPostprocess } from './paddle/db_postprocess';
 import {
   preprocessForDet,
@@ -223,19 +227,75 @@ export class PaddleBackend implements Backend {
       return { text: '', confidence: 0 };
     }
 
-    const bbox: [number, number, number, number] = [
-      0,
-      0,
-      lineImage.width,
-      lineImage.height,
-    ];
-    const recInput = preprocessForRecBatch(lineImage, [bbox]);
+    const decoded = await this.runRecBatch([lineImage]);
+    return this.decodeToLine(decoded[0]!);
+  }
+
+  /**
+   * rec-only 認識 (バッチ版)。 外部で切り出し済みの複数行画像を **1 回の
+   * `recSession.run`** にまとめて推論する。 `recognizeLine()` を件数分呼ぶ場合と
+   * 比べ、 同一フレーム内の複数 ROI をまとめて処理する密集パック用途で律速を解消する。
+   *
+   * `recOnly: true` で生成した場合のみ有効 (det session が無いため)。
+   * 挙動は `recognizeLine()` を入力順に呼んだ場合と一致する
+   * (前処理・CTC デコード・補正パイプラインとも同一ロジックを共有)。
+   *
+   * @param lineImages 切り出し済みの 1 行画像の配列。 空配列なら空配列を返す
+   *                    (rec 推論は発生しない)。
+   */
+  async recognizeLines(lineImages: readonly ImageData[]): Promise<RecognizedLine[]> {
+    if (lineImages.length === 0) return [];
+
+    // 0 幅/高さの画像は推論に回さず、結果配列内の該当位置だけ空扱いにする
+    // (recognizeLine() の単体挙動と一致させるため)。
+    const validIndices: number[] = [];
+    const validImages: ImageData[] = [];
+    for (let i = 0; i < lineImages.length; i++) {
+      const img = lineImages[i]!;
+      if (img.width > 0 && img.height > 0) {
+        validIndices.push(i);
+        validImages.push(img);
+      }
+    }
+
+    const results: RecognizedLine[] = new Array(lineImages.length).fill(null).map(
+      () => ({ text: '', confidence: 0 }),
+    );
+    if (validImages.length === 0) return results;
+
+    const decoded = await this.runRecBatch(validImages);
+    for (let i = 0; i < validIndices.length; i++) {
+      results[validIndices[i]!] = this.decodeToLine(decoded[i]!);
+    }
+    return results;
+  }
+
+  /**
+   * 複数の 1 行画像を rec 前処理 (batch tensor 化) → `recSession.run` 1 回 →
+   * CTC greedy decode まで行う private helper。
+   * `recognizeLine` / `recognizeLines` の共通処理 (前処理〜デコード) を集約する。
+   */
+  private async runRecBatch(
+    lineImages: readonly ImageData[],
+  ): Promise<CtcDecodeResult[]> {
+    // preprocessForRecBatch は「1 枚の画像内の複数 bbox」を想定した API のため、
+    // 「複数の独立画像」を渡す本メソッドでは各画像を個別に前処理してから
+    // バッチ tensor に連結する。
+    const sampleStride = 3 * 48 * 320;
+    const batchTensor = new Float32Array(lineImages.length * sampleStride);
+    for (let i = 0; i < lineImages.length; i++) {
+      const img = lineImages[i]!;
+      const bbox: [number, number, number, number] = [0, 0, img.width, img.height];
+      const single = preprocessForRecBatch(img, [bbox]);
+      batchTensor.set(single.tensor, i * sampleStride);
+    }
+
     const recInputName = this.recSession.inputNames[0]!;
     const recOutputName = this.recSession.outputNames[0]!;
     const recTensor = new ort.Tensor(
       'float32',
-      recInput.tensor,
-      [recInput.batch, 3, recInput.height, recInput.width],
+      batchTensor,
+      [lineImages.length, 3, 48, 320],
     );
     const recOutput = await this.recSession.run({
       [recInputName]: recTensor,
@@ -243,14 +303,18 @@ export class PaddleBackend implements Backend {
     const recLogits = recOutput[recOutputName]!;
     const [B, T, C] = recLogits.dims as [number, number, number];
 
-    const decoded = ctcGreedyDecodeBatch(
+    return ctcGreedyDecodeBatch(
       recLogits.data as Float32Array,
       B,
       T,
       C,
       this.dict,
     );
-    const { text: raw, confidence } = decoded[0]!;
+  }
+
+  /** CTC decode 結果 1 件に補正パイプラインを適用し RecognizedLine に変換する。 */
+  private decodeToLine(decoded: CtcDecodeResult): RecognizedLine {
+    const { text: raw, confidence } = decoded;
     const corr = applyCorrectionPipeline(raw, this.vendor);
     // 補正パイプラインが未マッチ (null) の場合は空文字を返す (呼び出し側で
     // text === '' または confidence 閾値未満として弾ける)。
