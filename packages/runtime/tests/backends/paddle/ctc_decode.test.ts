@@ -85,3 +85,78 @@ describe('ctcGreedyDecodePaddle', () => {
     expect(() => ctcGreedyDecodePaddle(logits, T, C, ['a'])).toThrow(/dict mismatch/);
   });
 });
+
+describe('ctcGreedyDecodePaddle with charset constraint', () => {
+  const dict = ['a', 'b', 'c']; // C = 5 (blank, a, b, c, space)
+  const C = 5;
+
+  it('ignores charset when not provided (unchanged behavior)', () => {
+    const T = 3;
+    const logits = makeLogits([1, 2, 3], T, C);
+    const result = ctcGreedyDecodePaddle(logits, T, C, dict);
+    expect(result.text).toBe('abc');
+  });
+
+  it('forces selection to allowed charset even when a disallowed class has max logit', () => {
+    // 各 timestep で 'b' (非許可, idx 2) を最大 logit (0.9) にし、'a' (idx 1) に
+    // blank (idx 0) より高い次点確率 (0.5) を与える。charset={'a'} のため
+    // 許可されているのは a と blank のみ → b は除外され a が選ばれる。
+    // (3 timestep 連続で同一 index 'a' になるため CTC collapse で 1 文字にまとまる)
+    const T = 3;
+    const C_ = C;
+    const logits = new Float32Array(T * C_);
+    for (let t = 0; t < T; t++) {
+      logits[t * C_ + 0] = 0.001; // blank
+      logits[t * C_ + 1] = 0.5; // 'a' (許可、次点)
+      logits[t * C_ + 2] = 0.9; // 'b' (非許可だが最大)
+    }
+    const charset = new Set(['a']);
+    const result = ctcGreedyDecodePaddle(logits, T, C_, dict, charset);
+    expect(result.text).toBe('a');
+  });
+
+  it('always allows blank even under charset constraint', () => {
+    // blank (idx 0) を最大 logit にした場合でも charset 制約下で blank は選択可能。
+    const T = 3;
+    const logits = makeLogits([0, 0, 0], T, C);
+    const charset = new Set(['a']);
+    const result = ctcGreedyDecodePaddle(logits, T, C, dict, charset);
+    expect(result.text).toBe('');
+    expect(result.confidence).toBe(0);
+  });
+
+  it('ignores charset characters not present in dict (Set ∩ dict)', () => {
+    // charset に dict 未収録の 'z' を含めても無視され、'a' のみが有効許可文字になる。
+    const T = 2;
+    const logits = makeLogits([2, 1], T, C); // 'b', 'a'
+    const charset = new Set(['a', 'z']);
+    const result = ctcGreedyDecodePaddle(logits, T, C, dict, charset);
+    // t=0: 'b' は非許可。 残る候補は blank/a のみでどちらも同じ低確率 → 先に
+    //      評価される blank (idx 0) が採用され出力には現れない。
+    // t=1: 'a' は許可されそのまま選ばれる。
+    expect(result.text).toBe('a');
+  });
+
+  it('decodes an Ericsson-like serial correctly under the E/M/digit charset', () => {
+    // dict に E, M, 0-9 を含む簡易辞書を用意し、"E305MM503813" を合成する。
+    const fullDict = ['E', 'M', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'X']; // X は非許可のノイズ文字
+    const fullC = fullDict.length + 2;
+    const charset = new Set(['E', 'M', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9']);
+    const idxOf = (ch: string) => fullDict.indexOf(ch) + 1;
+    const text = 'E305MM503813';
+    // 各文字を 1 timestep ずつ生成。 CTC は連続同一 index を collapse するため、
+    // "MM" のような連続同一文字の間には blank (idx 0) を 1 timestep 挟む
+    // (実際の CRNN 出力でも同一文字が連続する場合は同様に blank で分離される)。
+    const seq: number[] = [];
+    for (let i = 0; i < text.length; i++) {
+      if (i > 0 && text[i] === text[i - 1]) {
+        seq.push(0); // blank で分離
+      }
+      seq.push(idxOf(text[i]!));
+    }
+    const T = seq.length;
+    const logits = makeLogits(seq, T, fullC);
+    const result = ctcGreedyDecodePaddle(logits, T, fullC, fullDict, charset);
+    expect(result.text).toBe(text);
+  });
+});
