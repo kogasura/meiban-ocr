@@ -77,6 +77,25 @@ export class MeibanOCR {
     return this.backend.recognizeLine(imageData);
   }
 
+  /**
+   * rec-only 認識 (バッチ版)。 外部で切り出し済みの複数行画像をまとめて 1 回の
+   * rec 推論にかけ、 `RecognizedLine[]` を入力順で返す。
+   * 挙動は `recognizeLine()` を各画像に順に呼んだ場合と一致する。
+   *
+   * `backend: 'paddle'` かつ `recOnly: true` で `create()` した場合のみ利用可能。
+   * それ以外の backend / モードで呼ぶと throw する。
+   */
+  async recognizeLines(images: readonly ImageInput[]): Promise<RecognizedLine[]> {
+    if (!isRecOnlyPaddleBackend(this.backend)) {
+      throw new Error(
+        'MeibanOCR.recognizeLines: only available when created with ' +
+          "{ backend: 'paddle', recOnly: true }",
+      );
+    }
+    const imageDataList = images.map((image) => imageInputToImageData(image));
+    return this.backend.recognizeLines(imageDataList);
+  }
+
   /** 解放: 内部 backend (ORT session 等) を破棄。 */
   async dispose(): Promise<void> {
     return this.backend.dispose();
@@ -92,6 +111,7 @@ function isRecOnlyPaddleBackend(
   backend: Backend,
 ): backend is PaddleBackend & {
   recognizeLine(image: ImageData): Promise<RecognizedLine>;
+  recognizeLines(images: readonly ImageData[]): Promise<RecognizedLine[]>;
 } {
   return (
     typeof (backend as Partial<PaddleBackend>).recognizeLine === 'function'

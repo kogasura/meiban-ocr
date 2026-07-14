@@ -29,15 +29,20 @@ function makeFakeRecSession(dict: string[]) {
   return {
     inputNames: ['x'],
     outputNames: ['softmax_0.tmp_0'],
-    run: vi.fn(async () => {
+    run: vi.fn(async (feeds: Record<string, { dims: number[] }>) => {
       // 各 timestep で常に blank (idx 0) を argmax にする単純な出力
-      // (text は空になるが、confidence/形状だけ検証したいので十分)
-      const data = new Float32Array(T * C);
-      for (let t = 0; t < T; t++) {
-        data[t * C] = 0.99; // blank
+      // (text は空になるが、confidence/形状だけ検証したいので十分)。
+      // 入力 tensor の batch 次元 (dims[0]) に合わせて B 件分の出力を返す
+      // (recognizeLines の複数画像バッチ推論を模すため)。
+      const B = feeds['x']?.dims[0] ?? 1;
+      const data = new Float32Array(B * T * C);
+      for (let b = 0; b < B; b++) {
+        for (let t = 0; t < T; t++) {
+          data[b * T * C + t * C] = 0.99; // blank
+        }
       }
       return {
-        'softmax_0.tmp_0': { data, dims: [1, T, C] },
+        'softmax_0.tmp_0': { data, dims: [B, T, C] },
       };
     }),
     release: vi.fn(async () => {}),
@@ -188,6 +193,97 @@ describe('PaddleBackend recOnly mode', () => {
 
     await expect(backend.dispose()).resolves.toBeUndefined();
     expect(recSession.release).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('PaddleBackend recognizeLines (batch)', () => {
+  it('recognizeLines([img]) returns the same result as recognizeLine(img)', async () => {
+    const dict = ['A', 'B', 'C'];
+    createSessionMock.mockResolvedValueOnce(makeFakeRecSession(dict));
+
+    const { PaddleBackend } = await import('../../../src/backends/paddle');
+    const backend = await PaddleBackend.create({
+      recOnly: true,
+      recModelUrl: 'data:application/octet-stream;base64,AA==',
+      dict,
+    });
+
+    const lineImage = {
+      width: 100,
+      height: 48,
+      data: new Uint8ClampedArray(100 * 48 * 4),
+    } as ImageData;
+
+    const single = await backend.recognizeLine(lineImage);
+    const batch = await backend.recognizeLines([lineImage]);
+
+    expect(batch).toHaveLength(1);
+    expect(batch[0]).toEqual(single);
+  });
+
+  it('recognizeLines() returns results in input order for multiple images', async () => {
+    const dict = ['A', 'B', 'C'];
+    createSessionMock.mockResolvedValueOnce(makeFakeRecSession(dict));
+
+    const { PaddleBackend } = await import('../../../src/backends/paddle');
+    const backend = await PaddleBackend.create({
+      recOnly: true,
+      recModelUrl: 'data:application/octet-stream;base64,AA==',
+      dict,
+    });
+
+    const images = [
+      { width: 100, height: 48, data: new Uint8ClampedArray(100 * 48 * 4) } as ImageData,
+      { width: 60, height: 48, data: new Uint8ClampedArray(60 * 48 * 4) } as ImageData,
+      { width: 200, height: 48, data: new Uint8ClampedArray(200 * 48 * 4) } as ImageData,
+    ];
+
+    const results = await backend.recognizeLines(images);
+    expect(results).toHaveLength(3);
+    for (const r of results) {
+      expect(r).toHaveProperty('text');
+      expect(r).toHaveProperty('confidence');
+    }
+  });
+
+  it('recognizeLines([]) returns an empty array without invoking the rec session', async () => {
+    const dict = ['A', 'B', 'C'];
+    const recSession = makeFakeRecSession(dict);
+    createSessionMock.mockResolvedValueOnce(recSession);
+
+    const { PaddleBackend } = await import('../../../src/backends/paddle');
+    const backend = await PaddleBackend.create({
+      recOnly: true,
+      recModelUrl: 'data:application/octet-stream;base64,AA==',
+      dict,
+    });
+
+    const results = await backend.recognizeLines([]);
+    expect(results).toEqual([]);
+    expect(recSession.run).not.toHaveBeenCalled();
+  });
+
+  it('recognizeLines() invokes recSession.run exactly once regardless of input count', async () => {
+    const dict = ['A', 'B', 'C'];
+    const recSession = makeFakeRecSession(dict);
+    createSessionMock.mockResolvedValueOnce(recSession);
+
+    const { PaddleBackend } = await import('../../../src/backends/paddle');
+    const backend = await PaddleBackend.create({
+      recOnly: true,
+      recModelUrl: 'data:application/octet-stream;base64,AA==',
+      dict,
+    });
+
+    const images = [
+      { width: 100, height: 48, data: new Uint8ClampedArray(100 * 48 * 4) } as ImageData,
+      { width: 60, height: 48, data: new Uint8ClampedArray(60 * 48 * 4) } as ImageData,
+      { width: 200, height: 48, data: new Uint8ClampedArray(200 * 48 * 4) } as ImageData,
+      { width: 80, height: 48, data: new Uint8ClampedArray(80 * 48 * 4) } as ImageData,
+    ];
+
+    await backend.recognizeLines(images);
+    expect(recSession.run).toHaveBeenCalledTimes(1);
   });
 });
 
