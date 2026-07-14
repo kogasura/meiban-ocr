@@ -18,6 +18,13 @@
  *
  * Confidence は **採用された各時刻の top1 確率の平均**
  * (PaddleOCR Python 実装と同じ式)。
+ *
+ * ## ベンダー別 許可文字制約 (constrained decode)
+ *
+ * `charset` を渡すと、各タイムステップの argmax を「許可文字 (+ CTC blank)」
+ * の class のみに制約する (非許可 class は選択肢から除外)。 モデル自体・
+ * dict 次元は変更しない — argmax 前に候補を絞るだけ。
+ * `charset` 省略時は従来と完全に同一の挙動 (全 class が候補)。
  */
 
 /** dict.txt の中身 (newline separated) を内部 char 配列に変換。 */
@@ -45,6 +52,30 @@ export interface CtcDecodeResult {
 }
 
 /**
+ * `charset` + `dict` から、 CTC decode で選択可能な class index の boolean mask
+ * (length C) を組み立てる。 index 0 (blank) は常に許可。
+ * 末尾 index (C-1, 半角スペース) は charset に `' '` が含まれる場合のみ許可。
+ * dict に存在しない charset 中の文字は無視される (Set ∩ dict)。
+ */
+function buildAllowedMask(
+  charset: ReadonlySet<string>,
+  dict: string[],
+  C: number,
+): Uint8Array {
+  const mask = new Uint8Array(C); // 0 = disallowed, 1 = allowed
+  mask[0] = 1; // CTC blank は常に許可
+  for (let i = 0; i < dict.length; i++) {
+    if (charset.has(dict[i]!)) {
+      mask[i + 1] = 1;
+    }
+  }
+  if (charset.has(' ')) {
+    mask[C - 1] = 1;
+  }
+  return mask;
+}
+
+/**
  * 1 サンプル (T × C softmax) を CTC greedy で decode。
  *
  * @param logits Float32Array length = T * C, row-major (T 連続)。 softmax 済を想定。
@@ -52,12 +83,15 @@ export interface CtcDecodeResult {
  * @param C class count
  * @param dict 文字辞書 (index = dict[i-1] for output index i, i in [1, N])
  *             dict.length + 2 が C と一致しなければエラー
+ * @param charset 省略可。 指定時は許可文字 (+ blank) のみを argmax の候補にする
+ *                (constrained decode)。 未指定なら従来通り全 class が候補。
  */
 export function ctcGreedyDecodePaddle(
   logits: Float32Array,
   T: number,
   C: number,
   dict: string[],
+  charset?: ReadonlySet<string>,
 ): CtcDecodeResult {
   if (dict.length + 2 !== C) {
     throw new Error(
@@ -65,13 +99,16 @@ export function ctcGreedyDecodePaddle(
     );
   }
 
-  // 各時刻 t で argmax + 確率を取得
+  const mask = charset ? buildAllowedMask(charset, dict, C) : undefined;
+
+  // 各時刻 t で argmax + 確率を取得 (mask 指定時は許可 class のみが候補)
   const indices: number[] = new Array(T);
   const probs: number[] = new Array(T);
   for (let t = 0; t < T; t++) {
-    let bestIdx = 0;
-    let bestProb = logits[t * C]!;
-    for (let c = 1; c < C; c++) {
+    let bestIdx = -1;
+    let bestProb = -Infinity;
+    for (let c = 0; c < C; c++) {
+      if (mask && !mask[c]) continue;
       const p = logits[t * C + c]!;
       if (p > bestProb) {
         bestProb = p;
@@ -131,6 +168,9 @@ export function ctcGreedyDecodePaddle(
 
 /**
  * バッチ (B, T, C) を一括 decode。
+ *
+ * @param charset 省略可。 指定時は全サンプルに同一の許可文字制約を適用する
+ *                (ctcGreedyDecodePaddle 参照)。
  */
 export function ctcGreedyDecodeBatch(
   logits: Float32Array,
@@ -138,12 +178,13 @@ export function ctcGreedyDecodeBatch(
   T: number,
   C: number,
   dict: string[],
+  charset?: ReadonlySet<string>,
 ): CtcDecodeResult[] {
   const out: CtcDecodeResult[] = new Array(B);
   const stride = T * C;
   for (let b = 0; b < B; b++) {
     const slice = logits.subarray(b * stride, (b + 1) * stride);
-    out[b] = ctcGreedyDecodePaddle(slice, T, C, dict);
+    out[b] = ctcGreedyDecodePaddle(slice, T, C, dict, charset);
   }
   return out;
 }

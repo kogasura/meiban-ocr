@@ -6,7 +6,7 @@
  *        → segmentation map → DB postprocess → bbox 配列
  *        → 各 bbox を rec 入力 (48×320 RGB) に正規化
  *        → PP-OCRv4 rec ONNX → CTC logits
- *        → CTC greedy decode + dict → text
+ *        → CTC greedy decode + dict → text (vendor.charset 指定時は許可文字制約)
  *        → Ericsson regex + 6 段補正 + 信頼度 gate
  *        → OCRResult[]
  *
@@ -187,13 +187,14 @@ export class PaddleBackend implements Backend {
     const recLogits = recOutput[recOutputName]!;
     const [B, T, C] = recLogits.dims as [number, number, number];
 
-    // 4. CTC greedy decode + dict 引き
+    // 4. CTC greedy decode + dict 引き (vendor に charset があれば制約 decode)
     const decoded = ctcGreedyDecodeBatch(
       recLogits.data as Float32Array,
       B,
       T,
       C,
       this.dict,
+      this.vendor.charset,
     );
 
     // 5. Ericsson regex + 6 段補正 + 信頼度 gate
@@ -309,6 +310,7 @@ export class PaddleBackend implements Backend {
       T,
       C,
       this.dict,
+      this.vendor.charset,
     );
   }
 
